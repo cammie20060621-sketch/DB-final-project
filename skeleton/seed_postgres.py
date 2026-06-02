@@ -55,7 +55,6 @@ def insert_many(cur, table, columns, rows):
 # ── seeders ──────────────────────────────────────────────────────────────────
 
 def seed_metro_stations(cur):
-    data = load("metro_stations.json")
     # TODO: Design your table schema, then implement the INSERT logic here.
     # Each item in `data` is a dict — inspect the JSON to see available fields.
     data = load("metro_stations.json")
@@ -69,11 +68,9 @@ def seed_metro_stations(cur):
     
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 def seed_national_rail_stations(cur):
-    data = load("national_rail_stations.json")
     # TODO: Design your table schema, then implement the INSERT logic here.
     data = load("national_rail_stations.json")
     table = "national_rail_stations"
@@ -85,7 +82,6 @@ def seed_national_rail_stations(cur):
     
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 def seed_metro_schedules(cur):
@@ -101,7 +97,6 @@ def seed_metro_schedules(cur):
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 def seed_national_rail_schedules(cur):
@@ -124,7 +119,6 @@ def seed_national_rail_schedules(cur):
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 def seed_seat_layouts(cur):
@@ -140,7 +134,6 @@ def seed_seat_layouts(cur):
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 def seed_users(cur):
@@ -160,7 +153,8 @@ def seed_users(cur):
     ]
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
+    user_map = {item["user_id"]: item["email"] for item in data}
+    return user_map
 
 
 def seed_national_rail_bookings(cur):
@@ -172,7 +166,7 @@ def seed_national_rail_bookings(cur):
     rows = [
         (
             item["booking_id"], 
-            item["user_id"], 
+            user_map.get(item["user_id"]), 
             item["train_id"], 
             item["origin_station"], 
             item["destination_station"], 
@@ -182,11 +176,11 @@ def seed_national_rail_bookings(cur):
             item["status"]
         )
         for item in data
+        if item["user_id"] in user_map
     ]
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 def seed_metro_travels(cur):
@@ -199,7 +193,7 @@ def seed_metro_travels(cur):
     rows = [
         (
             item["travel_id"], 
-            item["user_id"], 
+            user_map.get(item["user_id"]), 
             item["tap_in_station"], 
             item["tap_out_station"], 
             item["tap_in_time"], 
@@ -207,11 +201,11 @@ def seed_metro_travels(cur):
             item["fare"]
         )
         for item in data
+        if item["user_id"] in user_map
     ]
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 def seed_payments(cur):
@@ -234,7 +228,6 @@ def seed_payments(cur):
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 def seed_feedback(cur):
@@ -245,13 +238,13 @@ def seed_feedback(cur):
     columns = ["feedback_id", "user_id", "rating", "comment", "submitted_at"]
 
     rows = [
-        (item["feedback_id"], item["user_id"], item["rating"], item["comment"], item["submitted_at"])
+        (item["feedback_id"], user_map.get(item["user_id"]), item["rating"], item["comment"], item["submitted_at"])
         for item in data
+        if item["user_id"] in user_map
     ]
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    pass
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -269,11 +262,11 @@ def main():
         seed_metro_schedules(cur)
         seed_national_rail_schedules(cur)
         seed_seat_layouts(cur)
-        seed_users(cur)
-        seed_national_rail_bookings(cur)
-        seed_metro_travels(cur)
+        user_map =seed_users(cur)
+        seed_national_rail_bookings(cur,user_map)
+        seed_metro_travels(cur,user_map)
         seed_payments(cur)
-        seed_feedback(cur)
+        seed_feedback(cur,user_map)
         conn.commit()
         print("\nAll done. Database seeded successfully.")
     except Exception as e:
