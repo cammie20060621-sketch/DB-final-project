@@ -43,34 +43,42 @@
 -- 5. metro_stations and national_rail_stations have a DEFERRABLE FK cycle
 --    to allow both tables to be populated before the cross-reference is enforced.
 -- ============================================================
- 
+
 DROP TABLE IF EXISTS feedback CASCADE;
 DROP TABLE IF EXISTS payments CASCADE;
 DROP TABLE IF EXISTS bookings CASCADE;
 DROP TABLE IF EXISTS metro_travel_history CASCADE;
+
 DROP TABLE IF EXISTS metro_schedule_stops CASCADE;
 DROP TABLE IF EXISTS metro_schedules CASCADE;
+
 DROP TABLE IF EXISTS national_rail_seats CASCADE;
 DROP TABLE IF EXISTS national_rail_coaches CASCADE;
 DROP TABLE IF EXISTS national_rail_seat_layouts CASCADE;
 DROP TABLE IF EXISTS national_rail_schedule_stops CASCADE;
 DROP TABLE IF EXISTS national_rail_schedules CASCADE;
+
 DROP TABLE IF EXISTS national_rail_stations CASCADE;
 DROP TABLE IF EXISTS metro_stations CASCADE;
-DROP TABLE IF EXISTS registered_users CASCADE;
+
 DROP TABLE IF EXISTS refund_policy_windows CASCADE;
 DROP TABLE IF EXISTS refund_policy CASCADE;
 DROP TABLE IF EXISTS booking_rules CASCADE;
 DROP TABLE IF EXISTS travel_policies CASCADE;
 DROP TABLE IF EXISTS ticket_type_rules CASCADE;
 DROP TABLE IF EXISTS ticket_types CASCADE;
- 
+
+DROP TABLE IF EXISTS registered_users CASCADE;
+
+-- Recreate vector table too, so schema can be fully reset.
+DROP TABLE IF EXISTS policy_documents CASCADE;
+
+
 -- ============================================================
 -- 1. REGISTERED USERS
---  source file: registered_users.json
---  Purpose: Store user information for both metro and national rail passengers.
+-- Source file: registered_users.json
 -- ============================================================
- 
+
 CREATE TABLE registered_users (
     user_id           VARCHAR(20) PRIMARY KEY,
     name              TEXT NOT NULL,
@@ -81,117 +89,43 @@ CREATE TABLE registered_users (
     secret_question   TEXT,
     secret_answer     TEXT,
     registered_at     TIMESTAMPTZ DEFAULT NOW(),
-    is_active         BOOLEAN DEFAULT TRUE
+    is_active         BOOLEAN DEFAULT TRUE,
+
+    CHECK (year_of_birth IS NULL OR year_of_birth BETWEEN 1900 AND 2100)
 );
- 
- 
--- =============================================================
+
+
+-- ============================================================
 -- 2. METRO STATIONS
---
--- FIX #1: Added semicolon at end of CREATE TABLE statement.
--- FIX #6: interchange_rail_station_id FK to national_rail_stations cannot be
---         declared inline here because national_rail_stations does not exist yet.
---         The FK is added below via ALTER TABLE after both tables are created,
---         using DEFERRABLE INITIALLY DEFERRED to handle the mutual reference.
--- =============================================================
+-- Source file: metro_stations.json
+-- ============================================================
+
 CREATE TABLE metro_stations (
     station_id                   VARCHAR(10) PRIMARY KEY,
     name                         TEXT NOT NULL,
-    is_interchange_metro         BOOLEAN NOT NULL,
-    is_interchange_national_rail BOOLEAN NOT NULL,
-    interchange_rail_station_id  VARCHAR(10)   -- FK added via ALTER TABLE below
+    zone                         INTEGER,
+    is_interchange_metro         BOOLEAN NOT NULL DEFAULT FALSE,
+    is_interchange_national_rail BOOLEAN NOT NULL DEFAULT FALSE,
+    interchange_rail_station_id  VARCHAR(10),
+
+    CHECK (zone IS NULL OR zone > 0)
 );
- 
--- =============================================================
--- 3. METRO SCHEDULES
--- =============================================================
-CREATE TABLE metro_schedules (
-    schedule_id         VARCHAR(20) PRIMARY KEY,
-    line                VARCHAR(20) NOT NULL,
-    direction           VARCHAR(50) NOT NULL,
-    departure_time      TIME NOT NULL,
-    arrival_time        TIME NOT NULL,
-    frequency_min       INTEGER NOT NULL,
-    base_fare_usd       DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-    per_stop_fare_usd   DECIMAL(10,2) NOT NULL DEFAULT 0.00
-);
- 
--- ==============================================================
--- 4. METRO SCHEDULE STOPS
---  This table stores the order of stops for each metro_schedule.
---  Example:
---  schedule_id | station_id | stop_order
---    MSCH01     |  MS01     |    1
---    MSCH01     |  MS02     |    2
---    MSCH01     |  MS03     |    3
--- ==============================================================
- 
-CREATE TABLE metro_schedule_stops (
-    schedule_id     VARCHAR(20) NOT NULL,
-    station_id      VARCHAR(10) NOT NULL,
-    stop_order      INTEGER NOT NULL,
- 
-    PRIMARY KEY (schedule_id, stop_order),
-    UNIQUE (schedule_id, station_id),
- 
-    FOREIGN KEY (schedule_id) REFERENCES metro_schedules(schedule_id) ON DELETE CASCADE,
-    FOREIGN KEY (station_id)  REFERENCES metro_stations(station_id)   ON DELETE CASCADE,
- 
-    CHECK (stop_order > 0)
-);
- 
--- ==============================================================
--- 5. METRO TRAVEL HISTORY
---  Source file: metro_travel_history.json
---
---  Metro does not have seat reservations;
---  we only store the tap-in and tap-out for each trip.
---
--- FIX #8: Added CHECK to ensure completed trips always have
---         tap_out_time and exit_station_id recorded.
--- ==============================================================
- 
-CREATE TABLE metro_travel_history (
-    trip_id             VARCHAR(20) PRIMARY KEY,
-    user_id             VARCHAR(20) NOT NULL,
-    schedule_id         VARCHAR(20),
-    entry_station_id    VARCHAR(10) NOT NULL,
-    exit_station_id     VARCHAR(10),
-    ticket_type         VARCHAR(20) NOT NULL,   -- 'single', 'day_pass', etc.
-    travel_date         DATE NOT NULL,
-    tap_in_time         TIMESTAMPTZ NOT NULL,
-    tap_out_time        TIMESTAMPTZ,
-    amount_usd          DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-    status              VARCHAR(20) NOT NULL,   -- 'completed', 'in_progress', 'cancelled'
- 
-    FOREIGN KEY (user_id)           REFERENCES registered_users(user_id)      ON DELETE CASCADE,
-    FOREIGN KEY (schedule_id)       REFERENCES metro_schedules(schedule_id)    ON DELETE CASCADE,
-    FOREIGN KEY (entry_station_id)  REFERENCES metro_stations(station_id)      ON DELETE CASCADE,
-    FOREIGN KEY (exit_station_id)   REFERENCES metro_stations(station_id)      ON DELETE CASCADE,
- 
-    CHECK (tap_out_time IS NULL OR tap_out_time > tap_in_time),
-    CHECK (amount_usd >= 0),
-    CHECK (status IN ('completed', 'in_progress', 'cancelled')),
-    -- FIX #8: completed trips must have tap_out_time and exit_station_id
-    CHECK (
-        status != 'completed'
-        OR (tap_out_time IS NOT NULL AND exit_station_id IS NOT NULL)
-    )
-);
- 
--- ==============================================================
--- 6. NATIONAL RAIL STATIONS
--- ==============================================================
- 
+
+
+-- ============================================================
+-- 3. NATIONAL RAIL STATIONS
+-- Source file: national_rail_stations.json
+-- ============================================================
+
 CREATE TABLE national_rail_stations (
     station_id                              VARCHAR(10) PRIMARY KEY,
     name                                    TEXT NOT NULL,
     city                                    VARCHAR(50),
-    is_interchange_metro                    BOOLEAN NOT NULL,
-    is_interchange_national_rail            BOOLEAN NOT NULL,
-    interchange_national_rail_station_lines TEXT[],       -- e.g. ['NR Line 1', 'NR Line 2']
-    interchange_metro_station_id            VARCHAR(10),  -- FK added via ALTER TABLE below
- 
+    is_interchange_metro                    BOOLEAN NOT NULL DEFAULT FALSE,
+    is_interchange_national_rail            BOOLEAN NOT NULL DEFAULT FALSE,
+    interchange_national_rail_station_lines TEXT[],
+    interchange_metro_station_id            VARCHAR(10),
+
     CONSTRAINT chk_national_rail_interchange_lines
     CHECK (
         (
@@ -209,170 +143,218 @@ CREATE TABLE national_rail_stations (
         )
     )
 );
- 
--- FIX #6: Add cross-reference FKs after both station tables exist.
---         DEFERRABLE INITIALLY DEFERRED lets the seed script insert both sides
---         before the constraint is enforced at transaction commit.
+
+
+-- ============================================================
+-- 4. CROSS-REFERENCE FOREIGN KEYS
+-- Add after both station tables exist.
+-- DEFERRABLE allows mutual references during seeding.
+-- ============================================================
+
 ALTER TABLE metro_stations
     ADD CONSTRAINT fk_metro_interchange_rail
     FOREIGN KEY (interchange_rail_station_id)
     REFERENCES national_rail_stations(station_id)
     ON DELETE SET NULL
     DEFERRABLE INITIALLY DEFERRED;
- 
+
 ALTER TABLE national_rail_stations
     ADD CONSTRAINT fk_national_rail_interchange_metro
     FOREIGN KEY (interchange_metro_station_id)
     REFERENCES metro_stations(station_id)
     ON DELETE SET NULL
     DEFERRABLE INITIALLY DEFERRED;
- 
--- ==============================================================
+
+
+-- ============================================================
+-- 5. METRO SCHEDULES
+-- Source file: metro_schedules.json
+-- ============================================================
+
+CREATE TABLE metro_schedules (
+    schedule_id         VARCHAR(20) PRIMARY KEY,
+    line                VARCHAR(20) NOT NULL,
+    direction           VARCHAR(50) NOT NULL,
+    departure_time      TIME NOT NULL,
+    arrival_time        TIME NOT NULL,
+    frequency_min       INTEGER NOT NULL,
+    base_fare_usd       DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    per_stop_fare_usd   DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+
+    CHECK (frequency_min > 0),
+    CHECK (base_fare_usd >= 0),
+    CHECK (per_stop_fare_usd >= 0)
+);
+
+
+-- ============================================================
+-- 6. METRO SCHEDULE STOPS
+-- Normalized stop order for each metro schedule.
+-- ============================================================
+
+CREATE TABLE metro_schedule_stops (
+    schedule_id     VARCHAR(20) NOT NULL,
+    station_id      VARCHAR(10) NOT NULL,
+    stop_order      INTEGER NOT NULL,
+
+    PRIMARY KEY (schedule_id, stop_order),
+    UNIQUE (schedule_id, station_id),
+
+    FOREIGN KEY (schedule_id)
+        REFERENCES metro_schedules(schedule_id)
+        ON DELETE CASCADE,
+
+    FOREIGN KEY (station_id)
+        REFERENCES metro_stations(station_id)
+        ON DELETE CASCADE,
+
+    CHECK (stop_order > 0)
+);
+
+
+-- ============================================================
 -- 7. NATIONAL RAIL SCHEDULES
--- ==============================================================
- 
+-- Source file: national_rail_schedules.json
+-- ============================================================
+
 CREATE TABLE national_rail_schedules (
     schedule_id         VARCHAR(20) PRIMARY KEY,
     line                VARCHAR(20) NOT NULL,
-    service_type        VARCHAR(50) NOT NULL,   -- 'express', 'local'
+    service_type        VARCHAR(50) NOT NULL,
     direction           VARCHAR(50) NOT NULL,
     departure_time      TIME NOT NULL,
     arrival_time        TIME NOT NULL,
     base_fare_usd       DECIMAL(10,2) NOT NULL DEFAULT 0.00,
     per_stop_fare_usd   DECIMAL(10,2) NOT NULL DEFAULT 0.00,
- 
-    CHECK (base_fare_usd >= 0 AND per_stop_fare_usd >= 0)
+
+    CHECK (base_fare_usd >= 0),
+    CHECK (per_stop_fare_usd >= 0),
+    CHECK (service_type IN ('express', 'local', 'normal'))
 );
- 
- 
--- ==============================================================
+
+
+-- ============================================================
 -- 8. NATIONAL RAIL SCHEDULE STOPS
---  Similar to metro_schedule_stops but for national rail.
---
--- FIX #7: Aligned PK direction with metro_schedule_stops:
---         PRIMARY KEY (schedule_id, stop_order) + UNIQUE (schedule_id, station_id).
--- ==============================================================
- 
+-- ============================================================
+
 CREATE TABLE national_rail_schedule_stops (
     schedule_id     VARCHAR(20) NOT NULL,
     station_id      VARCHAR(10) NOT NULL,
     stop_order      INTEGER NOT NULL,
- 
-    PRIMARY KEY (schedule_id, stop_order),   -- FIX #7: was (schedule_id, station_id)
+
+    PRIMARY KEY (schedule_id, stop_order),
     UNIQUE (schedule_id, station_id),
- 
-    FOREIGN KEY (schedule_id) REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE,
-    FOREIGN KEY (station_id)  REFERENCES national_rail_stations(station_id)   ON DELETE CASCADE,
- 
+
+    FOREIGN KEY (schedule_id)
+        REFERENCES national_rail_schedules(schedule_id)
+        ON DELETE CASCADE,
+
+    FOREIGN KEY (station_id)
+        REFERENCES national_rail_stations(station_id)
+        ON DELETE CASCADE,
+
     CHECK (stop_order > 0)
 );
- 
--- ==============================================================
+
+
+-- ============================================================
 -- 9. NATIONAL RAIL SEAT LAYOUTS
---  Source file: national_rail_seat_layouts.json
---
---  Stores the top-level seat layout for a national rail schedule.
---
---  JSON structure:  layout → coaches → seats
---
--- FIX #2: Removed the invalid CHECK that referenced non-existent columns
---         (seat_row, seat_column). Those checks belong in national_rail_seats.
--- ==============================================================
- 
+-- Source file: national_rail_seat_layouts.json
+-- ============================================================
+
 CREATE TABLE national_rail_seat_layouts (
-    schedule_id     VARCHAR(20) NOT NULL,
     layout_id       VARCHAR(20) PRIMARY KEY,
- 
+    schedule_id     VARCHAR(20) NOT NULL,
+
     FOREIGN KEY (schedule_id)
         REFERENCES national_rail_schedules(schedule_id)
         ON DELETE CASCADE
 );
- 
--- ==============================================================
+
+
+-- ============================================================
 -- 10. NATIONAL RAIL COACHES
---  Source file: national_rail_seat_layouts.json
---
---  Stores coaches inside each seat layout.
---  Example: layout_id = SL01 | coach = A | fare_class = first
--- ==============================================================
- 
+-- ============================================================
+
 CREATE TABLE national_rail_coaches (
     layout_id       VARCHAR(20) NOT NULL,
     coach           VARCHAR(10) NOT NULL,
-    fare_class      VARCHAR(20) NOT NULL,   -- 'first', 'second'
- 
+    fare_class      VARCHAR(20) NOT NULL,
+
     PRIMARY KEY (layout_id, coach),
- 
+
     FOREIGN KEY (layout_id)
         REFERENCES national_rail_seat_layouts(layout_id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+
+    CHECK (fare_class IN ('first', 'standard'))
 );
- 
--- ==============================================================
+
+
+-- ============================================================
 -- 11. NATIONAL RAIL SEATS
---  Source file: national_rail_seat_layouts.json
---
---  Stores individual seats inside each coach.
---  Example: layout_id = SL01 | coach = A | seat_id = A01
---
--- FIX #3: Added missing comma before CHECK constraint.
--- ==============================================================
- 
+-- ============================================================
+
 CREATE TABLE national_rail_seats (
     seat_id        VARCHAR(20) NOT NULL,
     layout_id      VARCHAR(20) NOT NULL,
     coach          VARCHAR(10) NOT NULL,
     seat_row       INTEGER NOT NULL,
     seat_column    CHAR(1) NOT NULL,
- 
+
     PRIMARY KEY (layout_id, coach, seat_id),
- 
+
     FOREIGN KEY (layout_id, coach)
         REFERENCES national_rail_coaches(layout_id, coach)
-        ON DELETE CASCADE,   -- FIX #3: was missing comma here
- 
-    CHECK (seat_row > 0 AND seat_column ~ '^[A-Z]$')
+        ON DELETE CASCADE,
+
+    CHECK (seat_row > 0),
+    CHECK (seat_column ~ '^[A-Z]$')
 );
- 
--- ==============================================================
+
+
+-- ============================================================
 -- 12. TICKET TYPES
---  Source file: ticket_types.json
---  Purpose: Stores ticket type definitions and rules.
--- ==============================================================
- 
+-- Source file: ticket_types.json
+-- ============================================================
+
 CREATE TABLE ticket_types (
-    ticket_type     VARCHAR(20) PRIMARY KEY,  -- 'single', 'return', 'day_pass', 'weekly_pass', etc.
+    ticket_type     VARCHAR(20) PRIMARY KEY,
     display_name    VARCHAR(50) NOT NULL,
-    available_on    TEXT[] NOT NULL,          -- 'metro', 'national_rail', 'both'
-    description     TEXT
+    available_on    TEXT[] NOT NULL,
+    description     TEXT,
+
+    CHECK (array_length(available_on, 1) > 0)
 );
- 
--- ==============================================================
--- 13. TICKET TYPE NETWORK RULES
--- ==============================================================
- 
+
+
+-- ============================================================
+-- 13. TICKET TYPE RULES
+-- Source file: ticket_types.json
+-- ============================================================
+
 CREATE TABLE ticket_type_rules (
-    ticket_type             VARCHAR(20) NOT NULL,
-    network                 VARCHAR(20) NOT NULL,  -- 'metro' or 'national_rail'
-    pricing_model           VARCHAR(20) NOT NULL,  -- 'flat_rate', 'stops_based', etc.
-    formula                 TEXT NOT NULL,
-    fare_classes            TEXT[],                -- e.g. ['first', 'standard']
-    seat_assignment         BOOLEAN NOT NULL DEFAULT FALSE,
-    validity                TEXT,
-    advance_purchase        BOOLEAN NOT NULL DEFAULT FALSE,
-    advance_purchase_max_days INTEGER,
-    changes_allowed         BOOLEAN NOT NULL DEFAULT FALSE,
-    change_fee_usd          DECIMAL(10,2),
-    change_deadline         TEXT,
-    refundable              BOOLEAN NOT NULL DEFAULT FALSE,
-    refund_rules            TEXT,
- 
+    ticket_type                VARCHAR(20) NOT NULL,
+    network                    VARCHAR(20) NOT NULL,
+    pricing_model              VARCHAR(30) NOT NULL,
+    formula                    TEXT NOT NULL,
+    fare_classes               TEXT[],
+    seat_assignment            BOOLEAN NOT NULL DEFAULT FALSE,
+    validity                   TEXT,
+    advance_purchase           BOOLEAN NOT NULL DEFAULT FALSE,
+    advance_purchase_max_days  INTEGER,
+    changes_allowed            BOOLEAN NOT NULL DEFAULT FALSE,
+    change_fee_usd             DECIMAL(10,2),
+    change_deadline            TEXT,
+    refundable                 BOOLEAN NOT NULL DEFAULT FALSE,
+    refund_rules               TEXT,
+
     PRIMARY KEY (ticket_type, network),
- 
+
     FOREIGN KEY (ticket_type)
         REFERENCES ticket_types(ticket_type)
         ON DELETE CASCADE,
- 
+
     CHECK (network IN ('metro', 'national_rail')),
     CHECK (
         advance_purchase = FALSE
@@ -385,16 +367,62 @@ CREATE TABLE ticket_type_rules (
         OR change_fee_usd >= 0
     )
 );
- 
+
+
 -- ============================================================
--- 14. BOOKINGS
---  Source file: bookings.json
---  Purpose: Stores national rail advance bookings.
---
--- FIX #4: Added missing comma before CHECK constraint.
--- FIX #9: Added amount_usd to store the fare at time of booking.
+-- 14. METRO TRAVEL HISTORY
+-- Source file: metro_travel_history.json
 -- ============================================================
- 
+
+CREATE TABLE metro_travel_history (
+    trip_id             VARCHAR(20) PRIMARY KEY,
+    user_id             VARCHAR(20) NOT NULL,
+    schedule_id         VARCHAR(20),
+    entry_station_id    VARCHAR(10) NOT NULL,
+    exit_station_id     VARCHAR(10),
+    ticket_type         VARCHAR(20) NOT NULL,
+    travel_date         DATE NOT NULL,
+    tap_in_time         TIMESTAMPTZ NOT NULL,
+    tap_out_time        TIMESTAMPTZ,
+    amount_usd          DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    status              VARCHAR(20) NOT NULL,
+
+    FOREIGN KEY (user_id)
+        REFERENCES registered_users(user_id)
+        ON DELETE CASCADE,
+
+    FOREIGN KEY (schedule_id)
+        REFERENCES metro_schedules(schedule_id)
+        ON DELETE SET NULL,
+
+    FOREIGN KEY (entry_station_id)
+        REFERENCES metro_stations(station_id)
+        ON DELETE CASCADE,
+
+    FOREIGN KEY (exit_station_id)
+        REFERENCES metro_stations(station_id)
+        ON DELETE SET NULL,
+
+    FOREIGN KEY (ticket_type)
+        REFERENCES ticket_types(ticket_type)
+        ON DELETE CASCADE,
+
+    CHECK (tap_out_time IS NULL OR tap_out_time > tap_in_time),
+    CHECK (amount_usd >= 0),
+    CHECK (status IN ('completed', 'in_progress', 'cancelled')),
+    CHECK (
+        status != 'completed'
+        OR (tap_out_time IS NOT NULL AND exit_station_id IS NOT NULL)
+    )
+);
+
+
+-- ============================================================
+-- 15. BOOKINGS
+-- Source file: bookings.json
+-- Purpose: National rail advance bookings.
+-- ============================================================
+
 CREATE TABLE bookings (
     booking_id      VARCHAR(20) PRIMARY KEY,
     user_id         VARCHAR(20) NOT NULL,
@@ -403,121 +431,124 @@ CREATE TABLE bookings (
     layout_id       VARCHAR(20) NOT NULL,
     coach           VARCHAR(10) NOT NULL,
     seat_id         VARCHAR(20) NOT NULL,
-    fare_class      VARCHAR(20) NOT NULL,   -- 'first', 'second'
-    amount_usd      DECIMAL(10,2) NOT NULL DEFAULT 0.00,  -- FIX #9: fare at booking time
+    fare_class      VARCHAR(20) NOT NULL,
+    amount_usd      DECIMAL(10,2) NOT NULL DEFAULT 0.00,
     booking_date    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     travel_date     DATE NOT NULL,
-    status          VARCHAR(20) NOT NULL,   -- 'confirmed', 'cancelled', 'completed'
- 
+    status          VARCHAR(20) NOT NULL,
+
     FOREIGN KEY (user_id)
         REFERENCES registered_users(user_id)
         ON DELETE CASCADE,
+
     FOREIGN KEY (schedule_id)
         REFERENCES national_rail_schedules(schedule_id)
         ON DELETE CASCADE,
+
     FOREIGN KEY (ticket_type)
         REFERENCES ticket_types(ticket_type)
         ON DELETE CASCADE,
+
     FOREIGN KEY (layout_id, coach, seat_id)
         REFERENCES national_rail_seats(layout_id, coach, seat_id)
-        ON DELETE CASCADE,   -- FIX #4: was missing comma here
- 
+        ON DELETE CASCADE,
+
     CHECK (amount_usd >= 0),
+    CHECK (fare_class IN ('first', 'standard')),
     CHECK (status IN ('confirmed', 'cancelled', 'completed'))
 );
- 
+
+
 -- ============================================================
--- 15. PAYMENTS
---  Source file: payments.json
---  Purpose: Stores payment records for both metro and national rail.
---
---  A payment is linked to exactly one of:
---    - a national rail booking  (booking_id)
---    - a metro travel history   (trip_id)
---
--- FIX #11: Added CHECK constraint to enforce valid payment_status values.
+-- 16. PAYMENTS
+-- Source file: payments.json
+-- Payment can belong to either a booking or a metro trip.
 -- ============================================================
- 
+
 CREATE TABLE payments (
     payment_id      VARCHAR(20) PRIMARY KEY,
     user_id         VARCHAR(20) NOT NULL,
     booking_id      VARCHAR(20),
     trip_id         VARCHAR(20),
     amount_usd      DECIMAL(10,2) NOT NULL,
-    payment_method  VARCHAR(50) NOT NULL,   -- 'credit_card', 'ewallet', 'debit_card', etc.
+    payment_method  VARCHAR(50) NOT NULL,
     payment_date    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    payment_status  VARCHAR(20) NOT NULL,   -- 'paid', 'refunded', 'pending', 'failed'
- 
+    payment_status  VARCHAR(20) NOT NULL,
+
     FOREIGN KEY (user_id)
         REFERENCES registered_users(user_id)
         ON DELETE CASCADE,
+
     FOREIGN KEY (booking_id)
         REFERENCES bookings(booking_id)
         ON DELETE CASCADE,
+
     FOREIGN KEY (trip_id)
         REFERENCES metro_travel_history(trip_id)
         ON DELETE CASCADE,
- 
+
     CHECK (
-        (booking_id IS NOT NULL AND trip_id IS NULL) OR
+        (booking_id IS NOT NULL AND trip_id IS NULL)
+        OR
         (booking_id IS NULL AND trip_id IS NOT NULL)
     ),
     CHECK (amount_usd >= 0),
-    CHECK (payment_status IN ('paid', 'refunded', 'pending', 'failed'))  -- FIX #11
+    CHECK (payment_status IN ('paid', 'refunded', 'pending', 'failed'))
 );
- 
+
+
 -- ============================================================
--- 16. FEEDBACK
---  Source file: feedback.json
---  Purpose: Stores user feedback for national rail experiences.
---           A feedback record must be linked to a national rail booking.
+-- 17. FEEDBACK
+-- Source file: feedback.json
 -- ============================================================
- 
+
 CREATE TABLE feedback (
     feedback_id     VARCHAR(20) PRIMARY KEY,
     user_id         VARCHAR(20) NOT NULL,
     booking_id      VARCHAR(20) NOT NULL,
-    rating          INTEGER CHECK (rating >= 1 AND rating <= 5),
+    rating          INTEGER NOT NULL,
     comments        TEXT,
     feedback_date   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
- 
+
     FOREIGN KEY (user_id)
         REFERENCES registered_users(user_id)
         ON DELETE CASCADE,
+
     FOREIGN KEY (booking_id)
         REFERENCES bookings(booking_id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+
+    CHECK (rating BETWEEN 1 AND 5)
 );
- 
+
+
 -- ============================================================
--- 17. REFUND POLICY
---  Source file: refund_policy.json
---  Purpose: Stores structured refund eligibility rules.
---
--- FIX #10: Added FOREIGN KEY on ticket_type → ticket_types.
---          Added CHECK on service_type to enforce valid values.
+-- 18. REFUND POLICY
+-- Source file: refund_policy.json
 -- ============================================================
- 
+
 CREATE TABLE refund_policy (
     refund_policy_id  VARCHAR(20) PRIMARY KEY,
-    label             VARCHAR(50) NOT NULL,  -- e.g. 'full_refund_before_departure'
-    network           VARCHAR(20) NOT NULL,  -- 'metro', 'national_rail', 'all'
-    service_type      VARCHAR(20) NOT NULL,  -- 'express', 'local', 'normal', 'all'
+    label             VARCHAR(50) NOT NULL,
+    network           VARCHAR(20) NOT NULL,
+    service_type      VARCHAR(20) NOT NULL,
     ticket_type       VARCHAR(20) NOT NULL,
     version           VARCHAR(10) NOT NULL,
- 
+
     FOREIGN KEY (ticket_type)
-        REFERENCES ticket_types(ticket_type),  -- FIX #10
- 
+        REFERENCES ticket_types(ticket_type)
+        ON DELETE CASCADE,
+
     CHECK (network IN ('metro', 'national_rail', 'all')),
-    CHECK (service_type IN ('express', 'local', 'normal', 'all'))  -- FIX #10
+    CHECK (service_type IN ('express', 'local', 'normal', 'all'))
 );
- 
+
+
 -- ============================================================
--- 18. REFUND POLICY WINDOWS
---  Source file: refund_policy.json
+-- 19. REFUND POLICY WINDOWS
+-- Source file: refund_policy.json
 -- ============================================================
- 
+
 CREATE TABLE refund_policy_windows (
     window_id                    VARCHAR(30) PRIMARY KEY,
     refund_policy_id             VARCHAR(20) NOT NULL,
@@ -526,52 +557,60 @@ CREATE TABLE refund_policy_windows (
     hours_before_departure_max   INTEGER,
     refund_percentage            DECIMAL(5,2) NOT NULL,
     admin_fee_usd                DECIMAL(10,2) NOT NULL DEFAULT 0.00,
- 
+
     FOREIGN KEY (refund_policy_id)
         REFERENCES refund_policy(refund_policy_id)
         ON DELETE CASCADE,
- 
+
     CHECK (hours_before_departure_min IS NULL OR hours_before_departure_min >= 0),
     CHECK (hours_before_departure_max IS NULL OR hours_before_departure_max >= 0),
+    CHECK (
+        hours_before_departure_min IS NULL
+        OR hours_before_departure_max IS NULL
+        OR hours_before_departure_max >= hours_before_departure_min
+    ),
     CHECK (refund_percentage BETWEEN 0 AND 100),
     CHECK (admin_fee_usd >= 0)
 );
- 
+
+
 -- ============================================================
--- 19. BOOKING RULES
---  Source file: booking_rules.json
+-- 20. BOOKING RULES
+-- Source file: booking_rules.json
 -- ============================================================
- 
+
 CREATE TABLE booking_rules (
     booking_rules_id  VARCHAR(20) PRIMARY KEY,
     version           VARCHAR(10) NOT NULL,
-    network           VARCHAR(20) NOT NULL,  -- 'metro' or 'national_rail'
+    network           VARCHAR(20) NOT NULL,
     last_updated      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     rule_category     VARCHAR(50) NOT NULL,
     rule_title        VARCHAR(100) NOT NULL,
     rule_details      TEXT NOT NULL,
     extra_details     JSONB,
- 
-    CHECK (network IN ('metro', 'national_rail'))
+
+    CHECK (network IN ('metro', 'national_rail', 'all'))
 );
- 
+
+
 -- ============================================================
--- 20. TRAVEL POLICIES
---  Source file: travel_policies.json
+-- 21. TRAVEL POLICIES
+-- Source file: travel_policies.json
 -- ============================================================
- 
+
 CREATE TABLE travel_policies (
     travel_policy_id  VARCHAR(20) PRIMARY KEY,
     version           VARCHAR(10) NOT NULL,
     last_updated      DATE,
-    network           VARCHAR(20) NOT NULL,  -- 'metro', 'national_rail', 'all'
+    network           VARCHAR(20) NOT NULL,
     policy_category   VARCHAR(50) NOT NULL,
     policy_title      VARCHAR(100) NOT NULL,
     policy_details    TEXT NOT NULL,
     extra_details     JSONB,
- 
+
     CHECK (network IN ('metro', 'national_rail', 'all'))
 );
+
 
 -- ============================================================
 --  VECTOR SCHEMA  (RAG / Help Desk) — do not modify
@@ -592,5 +631,56 @@ CREATE TABLE IF NOT EXISTS policy_documents (
     created_at  TIMESTAMPTZ  DEFAULT NOW()
 );
 
--- Index for fast cosine similarity search
-CREATE INDEX IF NOT EXISTS ON policy_documents USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_policy_documents_embedding 
+ON policy_documents 
+USING hnsw (embedding vector_cosine_ops);
+
+-- ============================================================
+-- 23. PERFORMANCE INDEXES
+-- These help common queries run faster.
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_registered_users_email
+ON registered_users(email);
+
+CREATE INDEX IF NOT EXISTS idx_metro_schedule_stops_station
+ON metro_schedule_stops(station_id);
+
+CREATE INDEX IF NOT EXISTS idx_metro_schedule_stops_schedule_order
+ON metro_schedule_stops(schedule_id, stop_order);
+
+CREATE INDEX IF NOT EXISTS idx_national_rail_schedule_stops_station
+ON national_rail_schedule_stops(station_id);
+
+CREATE INDEX IF NOT EXISTS idx_national_rail_schedule_stops_schedule_order
+ON national_rail_schedule_stops(schedule_id, stop_order);
+
+CREATE INDEX IF NOT EXISTS idx_bookings_user_id
+ON bookings(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_bookings_schedule_date
+ON bookings(schedule_id, travel_date);
+
+CREATE INDEX IF NOT EXISTS idx_bookings_status
+ON bookings(status);
+
+CREATE INDEX IF NOT EXISTS idx_metro_travel_history_user_id
+ON metro_travel_history(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_metro_travel_history_travel_date
+ON metro_travel_history(travel_date);
+
+CREATE INDEX IF NOT EXISTS idx_payments_user_id
+ON payments(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_payments_booking_id
+ON payments(booking_id);
+
+CREATE INDEX IF NOT EXISTS idx_payments_trip_id
+ON payments(trip_id);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_booking_id
+ON feedback(booking_id);
+
+CREATE INDEX IF NOT EXISTS idx_policy_documents_category
+ON policy_documents(category);
