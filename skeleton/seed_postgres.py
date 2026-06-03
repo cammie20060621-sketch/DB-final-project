@@ -55,23 +55,24 @@ def insert_many(cur, table, columns, rows):
 # ── seeders ──────────────────────────────────────────────────────────────────
 
 def seed_metro_stations(cur):
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    # Each item in `data` is a dict — inspect the JSON to see available fields.
     data = load("metro_stations.json")
     table = "metro_stations"
-    # 欄位名稱一律使用 snake_case，並與 schema.sql 保持一致
-    columns = ["station_id", "name", "line", "latitude", "longitude"]
-    rows = [
-        (item["station_id"], item["name"], item["line"], item["latitude"], item["longitude"])
-        for item in data
-    ]
+    columns = ["station_id", "name", "zone", "is_interchange_metro", "is_interchange_national_rail", "interchange_rail_station_id"]
+    
+    rows = [(
+        item["station_id"],
+        item["name"],
+        item.get("zone"),
+        item.get("is_interchange_metro", False),
+        item.get("is_interchange_national_rail", False),
+        item.get("interchange_rail_station_id")
+    ) for item in data]
     
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
 
 
 def seed_national_rail_stations(cur):
-    # TODO: Design your table schema, then implement the INSERT logic here.
     data = load("national_rail_stations.json")
     table = "national_rail_stations"
     columns = ["station_id", "name", "latitude", "longitude"]
@@ -138,22 +139,25 @@ def seed_seat_layouts(cur):
 
 def seed_users(cur):
     data = load("registered_users.json")
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    table = "users"
-    columns = ["email", "first_name", "surname", "year_of_birth", "password_hash"]
-    rows = [
-        (
-            item["email"], 
-            item["first_name"], 
-            item["surname"], 
-            item["year_of_birth"], 
-            item["password_hash"]
-        )
-        for item in data
-    ]
+    table = "registered_users"
+    columns = ["user_id", "name", "email", "password_hash", "phone_number", "year_of_birth", "secret_question", "secret_answer"]
+    
+    rows = [(
+        item["user_id"],
+        item.get("name", f"{item.get('first_name', '')} {item.get('surname', '')}".strip()),
+        item["email"],
+        item["password_hash"],
+        item.get("phone_number"),
+        item.get("year_of_birth"),
+        item.get("secret_question"),
+        item.get("secret_answer")
+    ) for item in data]
+    
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    user_map = {item["user_id"]: item["email"] for item in data}
+    
+    # 回傳 user_map 供後續表查詢關聯
+    user_map = {item["user_id"]: item["user_id"] for item in data}
     return user_map
 
 
