@@ -307,7 +307,7 @@ def query_alternative_routes(
     cypher = f"""
     MATCH (origin WHERE origin.station_id = $origin_id)
     MATCH (dest   WHERE dest.station_id   = $destination_id)
-    MATCH p = (origin)-[:{rel_filter}*]-(dest)
+    MATCH p = (origin)-[:{rel_filter}*1..15]-(dest)
     WHERE NONE(n IN nodes(p) WHERE n.station_id = $avoid_station_id)
     WITH p,
          reduce(t = 0, r IN relationships(p) |
