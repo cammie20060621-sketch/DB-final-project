@@ -425,20 +425,77 @@ CREATE INDEX IF NOT EXISTS idx_policy_documents_embedding
 
 ## Agreed Graph Schema
 
-<!-- ============================================================
-  FILL THIS IN after your team agrees on Neo4j node labels and
-  relationship types.
-  ============================================================ -->
+### Node Labels
 
-```
-Node labels:
-- TODO
+| Label | Station ID range | Description |
+|---|---|---|
+| `MetroStation` | MS01 – MS20 | Urban metro network stations |
+| `NationalRailStation` | NR01 – NR10 | National rail network stations |
 
-Relationship types:
-- TODO
+**`MetroStation` properties:**
+| Property | Type | Example |
+|---|---|---|
+| `station_id` | `string` | `"MS01"` |
+| `name` | `string` | `"Central Square"` |
+| `lines` | `string[]` | `["M1", "M2"]` |
+| `is_interchange_metro` | `boolean` | `true` |
+| `is_interchange_national_rail` | `boolean` | `true` |
 
-Key properties:
-- TODO
+**`NationalRailStation` properties:**
+| Property | Type | Example |
+|---|---|---|
+| `station_id` | `string` | `"NR01"` |
+| `name` | `string` | `"Central Station"` |
+| `lines` | `string[]` | `["NR1", "NR2"]` |
+| `is_interchange_metro` | `boolean` | `true` |
+| `is_interchange_national_rail` | `boolean` | `true` |
+
+### Relationship Types
+
+| Type | From → To | Direction | Description |
+|---|---|---|---|
+| `METRO_LINK` | `MetroStation` → `MetroStation` | Both directions seeded | Adjacent metro stations on a shared line |
+| `RAIL_LINK` | `NationalRailStation` → `NationalRailStation` | Both directions seeded | Adjacent national rail stations on a shared line |
+| `INTERCHANGE_TO` | `MetroStation` ↔ `NationalRailStation` | Both directions seeded | Physical walk between co-located metro and rail stations |
+
+**`METRO_LINK` properties:**
+| Property | Type | Example |
+|---|---|---|
+| `line` | `string` | `"M1"` |
+| `travel_time_min` | `integer` | `3` |
+
+**`RAIL_LINK` properties:**
+| Property | Type | Example |
+|---|---|---|
+| `line` | `string` | `"NR1"` |
+| `travel_time_min` | `integer` | `12` |
+
+**`INTERCHANGE_TO` properties:**
+| Property | Type | Default |
+|---|---|---|
+| `walk_time_min` | `integer` | `5` |
+| `accessible` | `boolean` | `true` |
+
+### Line IDs
+
+- Metro lines: `M1`, `M2`, `M3`, `M4`
+- National rail lines: `NR1`, `NR2`
+
+### Key Design Decisions
+
+1. **Bidirectional relationships:** `METRO_LINK` and `RAIL_LINK` are directed (`a→b`) but both directions are seeded for every pair, so `shortestPath` and undirected traversals work correctly.
+2. **Interchange pairs:** `INTERCHANGE_TO` is seeded explicitly in both directions (MS→NR and NR→MS) with a fixed 5-minute walk time.
+3. **Network separation:** Metro and national rail nodes use distinct labels so queries can filter by network (`METRO_LINK` only vs `RAIL_LINK` only vs all).
+4. **`hops` in variable-length paths:** Cypher does not accept query parameters inside path-length bounds (`*1..N`). The `hops` value in `query_delay_ripple` is embedded directly via Python f-string interpolation — not passed as `$hops`.
+
+```cypher
+// Example: all stations on M1
+MATCH (a:MetroStation)-[:METRO_LINK {line: "M1"}]->(b:MetroStation)
+RETURN a.station_id, a.name, b.station_id, b.name
+
+// Example: cross-network interchange
+MATCH (m:MetroStation {station_id: "MS01"})-[:INTERCHANGE_TO]->(r:NationalRailStation)
+RETURN m.name, r.name, r.station_id
 ```
 
 ## Function Signatures We Are Implementing
