@@ -55,7 +55,7 @@ def insert_many(cur, table, columns, rows):
 # ── seeders ──────────────────────────────────────────────────────────────────
 
 def seed_metro_stations(cur):
-   data = load("metro_stations.json")
+    data = load("metro_stations.json")
     table = "metro_stations"
     columns = ["station_id", "name", "zone", "is_interchange_metro", "is_interchange_national_rail", "interchange_rail_station_id"]
     
