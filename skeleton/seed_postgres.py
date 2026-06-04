@@ -366,7 +366,80 @@ def seed_ticket_types(cur):
     )
     print(f"  -> Inserted {inserted_rules} rows into ticket_type_rules")
 
+def seed_ticket_types(cur):
+    data = load("ticket_types.json")
+    table = "ticket_types"
+    columns = ["ticket_type", "display_name", "available_on", "description"]
+    
+    rows = [(
+        item["ticket_type"],
+        item.get("display_name", ""),
+        item.get("available_on", []),  # psycopg2 會自動轉為 PostgreSQL array
+        item.get("description", "")
+    ) for item in data]
+    
+    inserted = insert_many(cur, table, columns, rows)
+    print(f"  -> Inserted {inserted} rows into {table}")
+
+def seed_ticket_type_rules(cur):
+    data = load("ticket_types.json")
+    table = "ticket_type_rules"
+    columns = [
+        "ticket_type", "network", "pricing_model", "formula", "fare_classes",
+        "seat_assignment", "validity", "advance_purchase", "advance_purchase_max_days",
+        "changes_allowed", "change_fee_usd", "change_deadline", "refundable", "refund_rules"
+    ]
+    
+    rows = []
+    for item in data:
+        ticket_type = item["ticket_type"]
+        
+        # Process metro rules if available
+        metro_rules = item.get("metro")
+        if metro_rules:
+            rows.append((
+                ticket_type,
+                "metro",
+                metro_rules.get("pricing_model", ""),
+                metro_rules.get("formula", ""),
+                metro_rules.get("fare_classes", []),
+                metro_rules.get("seat_assignment", False),
+                metro_rules.get("validity", ""),
+                metro_rules.get("advance_purchase", False),
+                metro_rules.get("advance_purchase_max_days"),
+                metro_rules.get("changes_allowed", False),
+                metro_rules.get("change_fee_usd"),
+                metro_rules.get("change_deadline"),
+                metro_rules.get("refundable", False),
+                metro_rules.get("refund_rule", "")
+            ))
+        
+        # Process national_rail rules if available
+        rail_rules = item.get("national_rail")
+        if rail_rules:
+            rows.append((
+                ticket_type,
+                "national_rail",
+                rail_rules.get("pricing_model", ""),
+                rail_rules.get("formula", ""),
+                rail_rules.get("fare_classes", []),
+                rail_rules.get("seat_assignment", False),
+                rail_rules.get("validity", ""),
+                rail_rules.get("advance_purchase", False),
+                rail_rules.get("advance_purchase_max_days"),
+                rail_rules.get("changes_allowed", False),
+                rail_rules.get("change_fee_usd"),
+                rail_rules.get("change_deadline"),
+                rail_rules.get("refundable", False),
+                rail_rules.get("refund_rule", "")
+            ))
+    
+    inserted = insert_many(cur, table, columns, rows)
+    print(f"  -> Inserted {inserted} rows into {table}")
+
 def seed_users(cur):
+    import hashlib
+    
     data = load("registered_users.json")
 
     table = "registered_users"
@@ -447,7 +520,6 @@ def seed_national_rail_bookings(cur, user_map):
         "travel_date",
         "status",
     ]
-
     rows = []
 
     for item in data:
@@ -692,6 +764,8 @@ def main():
         seed_metro_schedules(cur)
         seed_national_rail_schedules(cur)
         seed_seat_layouts(cur)
+        seed_ticket_types(cur)
+        seed_ticket_type_rules(cur)
         
         user_map =seed_users(cur)
         seed_ticket_types(cur)

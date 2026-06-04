@@ -21,6 +21,8 @@ TransitFlow is a Python-based AI chat assistant for a fictional transit operator
 - Web UI: Gradio
 - LLM: Google Gemini or local Ollama (configured via `.env`)
 
+> **Port & connection config:** Database ports and credentials are **not** hardcoded — copy `.env.example` to `.env` and fill in your values before running. Key variables include `POSTGRES_PORT` (default `5433`), `NEO4J_PORT` (default `7688`), and `NEO4J_URI` / `POSTGRES_*` credentials. Each team member must set up their own `.env` locally.
+
 ## Coding Conventions
 
 - **Naming:** `snake_case` for all Python names and SQL identifiers
@@ -560,6 +562,9 @@ def query_station_connections(station_id: str) -> list[dict]: ...
 ### Architecture
 - [x] **Agent tool routing is LLM-driven.** `skeleton/agent.py` uses the LLM to decide which database tool to call based on the user's question. Why: no hard-coded keyword matching needed for the main path; the LLM reads the user message and selects the right tool (graph, relational, or vector) automatically.
 - [x] **Vector search is pre-implemented and read-only.** `query_policy_vector_search` and `store_policy_document` in `databases/relational/queries.py` are already implemented. Students should not modify them; extend coverage by adding content to the JSON files in `train-mock-data/` and re-running `skeleton/seed_vectors.py`.
+
+### Testing
+- [x] **Graph query logic is covered by offline unit tests.** `test_graph_queries.py` uses `unittest.mock` to intercept the Neo4j driver, enabling schema consistency checks and edge-case validation (e.g. route-not-found handling) without a live database connection. All tests pass 100%.
 
 ---
 
