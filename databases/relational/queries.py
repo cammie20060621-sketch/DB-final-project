@@ -145,28 +145,27 @@ def query_national_rail_fare(
     Args:
         schedule_id:     e.g. "NR_SCH01"
         fare_class:      "standard" or "first"
-        stops_travelled: number of stops between origin and destination (inclusive)
+        stops_travelled: number of stops between origin and destination
 
     Returns:
         dict with fare_class, base_fare_usd, per_stop_rate_usd, total_fare_usd
     """
+    fare_class = fare_class.lower().strip()
+
     sql = """
         SELECT
             schedule_id,
+            fare_class,
             base_fare_usd,
             per_stop_fare_usd
-        FROM national_rail_schedules
-        WHERE schedule_id = %s;
+        FROM national_rail_fare_classes
+        WHERE schedule_id = %s
+          AND fare_class = %s;
     """
-
-    fare_class = fare_class.lower().strip()
-
-    if fare_class not in ("standard", "first"):
-        return None
 
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (schedule_id,))
+            cur.execute(sql, (schedule_id, fare_class))
             row = cur.fetchone()
 
             if not row:
@@ -174,21 +173,14 @@ def query_national_rail_fare(
 
             base_fare = float(row["base_fare_usd"])
             per_stop_fare = float(row["per_stop_fare_usd"])
-
-            # Simple assumption:
-            # standard = normal price
-            # first = 1.5x price
-            multiplier = 1.5 if fare_class == "first" else 1.0
-
-            total_fare = (base_fare + (stops_travelled * per_stop_fare)) * multiplier
+            total_fare = base_fare + (stops_travelled * per_stop_fare)
 
             return {
                 "schedule_id": row["schedule_id"],
-                "fare_class": fare_class,
+                "fare_class": row["fare_class"],
                 "base_fare_usd": base_fare,
                 "per_stop_rate_usd": per_stop_fare,
                 "stops_travelled": stops_travelled,
-                "fare_class_multiplier": multiplier,
                 "total_fare_usd": round(total_fare, 2),
             }
 
