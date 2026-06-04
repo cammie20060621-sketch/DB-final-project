@@ -87,7 +87,7 @@ def seed_national_rail_stations(cur):
         item.get("city"),
         item.get("is_interchange_metro", False),
         item.get("is_interchange_national_rail", False),
-        item.get("interchange_national_rail_station_lines"), # psycopg2 會自動轉為 PostgreSQL array
+        item.get("interchange_national_rail_lines"), # psycopg2 會自動轉為 PostgreSQL array
         item.get("interchange_metro_station_id")
     ) for item in data]
     
@@ -106,11 +106,11 @@ def seed_metro_schedules(cur):
         item["schedule_id"],
         item["line"],
         item.get("direction", "Unknown"),
-        item["departure_time"],
-        item["arrival_time"],
+        item.get("first_train_time", "00:00"),
+        item.get("last_train_time", "23:59"),
         item.get("frequency_min", 10),
         item.get("base_fare_usd", 0.00),
-        item.get("per_stop_fare_usd", 0.00)
+        item.get("per_stop_rate_usd", 0.00)
     ) for item in data]
     
     inserted_sched = insert_many(cur, table_sched, columns_sched, rows_sched)
@@ -122,10 +122,10 @@ def seed_metro_schedules(cur):
     
     rows_stops = []
     for item in data:
-        # 如果 JSON 裡的 station_id 是一個陣列/清單則拆開，若是單一值則給 order 1
-        stations = item["station_id"] if isinstance(item["station_id"], list) else [item["station_id"]]
-        for idx, st_id in enumerate(stations, start=1):
-            rows_stops.append((item["schedule_id"], st_id, idx))
+        # stops_in_order 是站點列表
+        stops = item.get("stops_in_order", [])
+        for idx, station_id in enumerate(stops, start=1):
+            rows_stops.append((item["schedule_id"], station_id, idx))
             
     inserted_stops = insert_many(cur, table_stops, columns_stops, rows_stops)
     print(f"  -> Inserted {inserted_stops} rows into {table_stops}")
@@ -139,14 +139,14 @@ def seed_national_rail_schedules(cur):
     columns_sched = ["schedule_id", "line", "service_type", "direction", "departure_time", "arrival_time", "base_fare_usd", "per_stop_fare_usd"]
     
     rows_sched = [(
-        item["train_id"], # JSON 的 train_id 映射為 schedule_id
-        item.get("line", item.get("route_id", "Unknown")),
+        item["schedule_id"],
+        item.get("line", "Unknown"),
         item.get("service_type", "normal"),
         item.get("direction", "Unknown"),
-        item["departure_time"],
-        item["arrival_time"],
-        item.get("base_fare_usd", 0.00),
-        item.get("per_stop_fare_usd", 0.00)
+        item.get("first_train_time", "00:00"),
+        item.get("last_train_time", "23:59"),
+        item.get("fare_classes", {}).get("standard", {}).get("base_fare_usd", 0.00),
+        item.get("fare_classes", {}).get("standard", {}).get("per_stop_rate_usd", 0.00)
     ) for item in data]
     
     inserted_sched = insert_many(cur, table_sched, columns_sched, rows_sched)
@@ -158,11 +158,10 @@ def seed_national_rail_schedules(cur):
     
     rows_stops = []
     for item in data:
-        stations = item["station_id"] if isinstance(item["station_id"], list) else [item["station_id"]]
-        # 如果 JSON 本身有 sequence_number 就用它，沒有就用 enumerate 產出
-        for idx, st_id in enumerate(stations, start=1):
-            seq = item.get("sequence_number", idx)
-            rows_stops.append((item["train_id"], st_id, seq))
+        stops = item.get("stops_in_order", [])
+        # 根據 stops_in_order 的順序插入
+        for idx, st_id in enumerate(stops, start=1):
+            rows_stops.append((item["schedule_id"], st_id, idx))
             
     inserted_stops = insert_many(cur, table_stops, columns_stops, rows_stops)
     print(f"  -> Inserted {inserted_stops} rows into {table_stops}")
@@ -175,36 +174,30 @@ def seed_seat_layouts(cur):
     table_layouts = "national_rail_seat_layouts"
     columns_layouts = ["layout_id", "schedule_id"]
     
-    # 建立 layout_id（JSON內通常若無個別ID，可以複合或用 layout_ 拼接，這裡假設 JSON 欄位或拿 train_id 當 layout_id）
     rows_layouts = []
     rows_coaches = []
     rows_seats = []
     
-    # 用於防重
-    seen_layouts = set()
-    seen_coaches = set()
-
-    for item in data:
-        # 配合 schema 的 FK 串接邏輯
-        layout_id = item.get("layout_id", f"layout_{item['train_id']}")
-        sched_id = item["train_id"] # 對應到 national_rail_schedules 的主鍵
-        coach_id = item["carriage_number"]
-        fare_class = item["class_type"]
-        seat_id = item["seat_number"]
+    for layout_item in data:
+        layout_id = layout_item["layout_id"]
+        schedule_id = layout_item["schedule_id"]
         
-        # 解析座位 Row 和 Column (例如 "12A" -> row=12, col='A')
-        seat_row = int(''.join(filter(str.isdigit, seat_id)))
-        seat_col = ''.join(filter(str.isalpha, seat_id)).upper()
-
-        if layout_id not in seen_layouts:
-            rows_layouts.append((layout_id, sched_id))
-            seen_layouts.add(layout_id)
+        rows_layouts.append((layout_id, schedule_id))
+        
+        # 遍歷每個coach
+        for coach_item in layout_item.get("coaches", []):
+            coach = coach_item["coach"]
+            fare_class = coach_item["fare_class"]
             
-        if (layout_id, coach_id) not in seen_coaches:
-            rows_coaches.append((layout_id, coach_id, fare_class))
-            seen_coaches.add((layout_id, coach_id))
+            rows_coaches.append((layout_id, coach, fare_class))
             
-        rows_seats.append((seat_id, layout_id, coach_id, seat_row, seat_col))
+            # 遍歷每個座位
+            for seat_item in coach_item.get("seats", []):
+                seat_id = seat_item["seat_id"]
+                seat_row = seat_item.get("row", 1)
+                seat_col = seat_item.get("column", "A")
+                
+                rows_seats.append((seat_id, layout_id, coach, seat_row, seat_col))
 
     ins_layouts = insert_many(cur, table_layouts, columns_layouts, rows_layouts)
     ins_coaches = insert_many(cur, "national_rail_coaches", ["layout_id", "coach", "fare_class"], rows_coaches)
@@ -212,21 +205,107 @@ def seed_seat_layouts(cur):
     
     print(f"  -> Inserted {ins_layouts} layouts, {ins_coaches} coaches, {ins_seats} seats.")
 
+def seed_ticket_types(cur):
+    data = load("ticket_types.json")
+    table = "ticket_types"
+    columns = ["ticket_type", "display_name", "available_on", "description"]
+    
+    rows = [(
+        item["ticket_type"],
+        item.get("display_name", ""),
+        item.get("available_on", []),  # psycopg2 會自動轉為 PostgreSQL array
+        item.get("description", "")
+    ) for item in data]
+    
+    inserted = insert_many(cur, table, columns, rows)
+    print(f"  -> Inserted {inserted} rows into {table}")
+
+def seed_ticket_type_rules(cur):
+    data = load("ticket_types.json")
+    table = "ticket_type_rules"
+    columns = [
+        "ticket_type", "network", "pricing_model", "formula", "fare_classes",
+        "seat_assignment", "validity", "advance_purchase", "advance_purchase_max_days",
+        "changes_allowed", "change_fee_usd", "change_deadline", "refundable", "refund_rules"
+    ]
+    
+    rows = []
+    for item in data:
+        ticket_type = item["ticket_type"]
+        
+        # Process metro rules if available
+        metro_rules = item.get("metro")
+        if metro_rules:
+            rows.append((
+                ticket_type,
+                "metro",
+                metro_rules.get("pricing_model", ""),
+                metro_rules.get("formula", ""),
+                metro_rules.get("fare_classes", []),
+                metro_rules.get("seat_assignment", False),
+                metro_rules.get("validity", ""),
+                metro_rules.get("advance_purchase", False),
+                metro_rules.get("advance_purchase_max_days"),
+                metro_rules.get("changes_allowed", False),
+                metro_rules.get("change_fee_usd"),
+                metro_rules.get("change_deadline"),
+                metro_rules.get("refundable", False),
+                metro_rules.get("refund_rule", "")
+            ))
+        
+        # Process national_rail rules if available
+        rail_rules = item.get("national_rail")
+        if rail_rules:
+            rows.append((
+                ticket_type,
+                "national_rail",
+                rail_rules.get("pricing_model", ""),
+                rail_rules.get("formula", ""),
+                rail_rules.get("fare_classes", []),
+                rail_rules.get("seat_assignment", False),
+                rail_rules.get("validity", ""),
+                rail_rules.get("advance_purchase", False),
+                rail_rules.get("advance_purchase_max_days"),
+                rail_rules.get("changes_allowed", False),
+                rail_rules.get("change_fee_usd"),
+                rail_rules.get("change_deadline"),
+                rail_rules.get("refundable", False),
+                rail_rules.get("refund_rule", "")
+            ))
+    
+    inserted = insert_many(cur, table, columns, rows)
+    print(f"  -> Inserted {inserted} rows into {table}")
+
 def seed_users(cur):
+    import hashlib
+    
     data = load("registered_users.json")
     table = "registered_users"
     columns = ["user_id", "name", "email", "password_hash", "phone_number", "year_of_birth", "secret_question", "secret_answer"]
     
-    rows = [(
-        item["user_id"],
-        item.get("name", f"{item.get('first_name', '')} {item.get('surname', '')}".strip()),
-        item["email"],
-        item["password_hash"],
-        item.get("phone_number"),
-        item.get("year_of_birth"),
-        item.get("secret_question"),
-        item.get("secret_answer")
-    ) for item in data]
+    rows = []
+    for item in data:
+        user_id = item["user_id"]
+        name = item.get("full_name", "")
+        email = item["email"]
+        # Hash the password for storage
+        password = item.get("password", "")
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        phone_number = item.get("phone")
+        
+        # Extract year from date_of_birth (format: YYYY-MM-DD)
+        dob = item.get("date_of_birth")
+        year_of_birth = None
+        if dob:
+            try:
+                year_of_birth = int(dob.split("-")[0])
+            except (ValueError, IndexError):
+                year_of_birth = None
+        
+        secret_question = item.get("secret_question")
+        secret_answer = item.get("secret_answer")
+        
+        rows.append((user_id, name, email, password_hash, phone_number, year_of_birth, secret_question, secret_answer))
     
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
@@ -235,7 +314,7 @@ def seed_users(cur):
     user_map = {item["user_id"]: item["user_id"] for item in data}
     return user_map
 
-def seed_national_rail_bookings(cur,user_map):
+def seed_national_rail_bookings(cur, user_map):
     data = load("bookings.json")
     table = "bookings"
     columns = [
@@ -244,31 +323,38 @@ def seed_national_rail_bookings(cur,user_map):
         "amount_usd", "booking_date", "travel_date", "status"
     ]
     
+    # 先載入layout信息以取得layout_id對應schedule_id的映射
+    layout_data = load("national_rail_seat_layouts.json")
+    schedule_to_layout = {}  # schedule_id -> layout_id
+    for layout in layout_data:
+        schedule_to_layout[layout["schedule_id"]] = layout["layout_id"]
+    
     rows = []
     for item in data:
         u_id = item["user_id"]
         if u_id in user_map:
-            # 配合 seat_layouts 的邏輯建立複合欄位預期
-            layout_id = item.get("layout_id", f"layout_{item['train_id']}")
+            schedule_id = item["schedule_id"]
+            layout_id = schedule_to_layout.get(schedule_id, "SL01")  # Default fallback
+            
             rows.append((
                 item["booking_id"],
                 u_id,
-                item["train_id"], # schedule_id
-                item.get("ticket_type", "Advance Standard"),
+                schedule_id,
+                item.get("ticket_type", "single"),
                 layout_id,
-                item.get("carriage_number", "A"),
-                item["seat_number"], # seat_id
+                item.get("coach", "A"),
+                item.get("seat_id", "A01"),
                 item.get("fare_class", "standard"),
-                item.get("fare", 0.00), # amount_usd
-                item.get("booking_time"), # booking_date
+                item.get("amount_usd", 0.00),
+                item.get("booked_at", None),
                 item.get("travel_date", "2026-06-01"),
-                item["status"]
+                item.get("status", "confirmed")
             ))
             
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
 
-def seed_metro_travels(cur,user_map):
+def seed_metro_travels(cur, user_map):
     data = load("metro_travel_history.json")
     table = "metro_travel_history"
     columns = [
@@ -281,17 +367,22 @@ def seed_metro_travels(cur,user_map):
     for item in data:
         u_id = item["user_id"]
         if u_id in user_map:
+            # 如果tap_in_time為null，使用travel_date作為默認值
+            tap_in_time = item.get("purchased_at")
+            if not tap_in_time:
+                tap_in_time = f"{item.get('travel_date', '2026-06-01')}T00:00:00Z"
+            
             rows.append((
-                item["travel_id"], # trip_id
+                item["trip_id"],
                 u_id,
                 item.get("schedule_id"),
-                item["tap_in_station"], # entry_station_id
-                item.get("tap_out_station"), # exit_station_id
-                item.get("ticket_type", "Pay As You Go"),
+                item["origin_station_id"],
+                item.get("destination_station_id"),
+                item.get("ticket_type", "single"),
                 item.get("travel_date", "2026-06-01"),
-                item["tap_in_time"],
-                item.get("tap_out_time"),
-                item.get("fare", 0.00), # amount_usd
+                tap_in_time,
+                item.get("travelled_at"),
+                item.get("amount_usd", 0.00),
                 item.get("status", "completed")
             ))
             
@@ -303,21 +394,43 @@ def seed_payments(cur):
     table = "payments"
     columns = ["payment_id", "user_id", "booking_id", "trip_id", "amount_usd", "payment_method", "payment_date", "payment_status"]
     
-    rows = [(
-        item["payment_id"],
-        item["user_id"],
-        item.get("booking_id"),
-        item.get("travel_id"), # 對應到 schema.sql 的 trip_id
-        item["amount"], # amount_usd
-        item["payment_method"],
-        item["payment_time"], # payment_date
-        item.get("status", "paid") # payment_status
-    ) for item in data]
+    # 建立booking_id和trip_id到user_id的映射
+    bookings_data = load("bookings.json")
+    booking_to_user = {item["booking_id"]: item["user_id"] for item in bookings_data}
+    
+    travels_data = load("metro_travel_history.json")
+    trip_to_user = {item["trip_id"]: item["user_id"] for item in travels_data}
+    
+    rows = []
+    for item in data:
+        payment_id = item["payment_id"]
+        amount_usd = item.get("amount_usd", 0.00)
+        payment_method = item.get("method", "unknown")
+        payment_date = item.get("paid_at")
+        payment_status = item.get("status", "pending")
+        booking_id = item.get("booking_id")
+        
+        # 確定這是booking還是trip
+        user_id = None
+        trip_id = None
+        
+        if booking_id.startswith("BK"):
+            # 這是booking
+            user_id = booking_to_user.get(booking_id)
+            trip_id = None
+        elif booking_id.startswith("MT"):
+            # 這是metro travel trip
+            user_id = trip_to_user.get(booking_id)
+            trip_id = booking_id
+            booking_id = None
+        
+        if user_id:
+            rows.append((payment_id, user_id, booking_id, trip_id, amount_usd, payment_method, payment_date, payment_status))
     
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
 
-def seed_feedback(cur,user_map):
+def seed_feedback(cur, user_map):
     data = load("feedback.json")
     table = "feedback"
     columns = ["feedback_id", "user_id", "booking_id", "rating", "comments", "feedback_date"]
@@ -325,14 +438,17 @@ def seed_feedback(cur,user_map):
     rows = []
     for item in data:
         u_id = item["user_id"]
-        if u_id in user_map:
+        booking_id = item.get("booking_id")
+        
+        # 只插入booking_id是BK開頭的反饋（因為schema的feedback表只支持booking_id）
+        if u_id in user_map and booking_id and booking_id.startswith("BK"):
             rows.append((
                 item["feedback_id"],
                 u_id,
-                item["booking_id"],
-                item["rating"],
-                item.get("comment"), # comments
-                item.get("submitted_at") # feedback_date
+                booking_id,
+                item.get("rating", 5),
+                item.get("comment"),  # comments
+                item.get("submitted_at")  # feedback_date
             ))
             
     inserted = insert_many(cur, table, columns, rows)
@@ -354,8 +470,10 @@ def main():
         seed_metro_schedules(cur)
         seed_national_rail_schedules(cur)
         seed_seat_layouts(cur)
+        seed_ticket_types(cur)
+        seed_ticket_type_rules(cur)
         
-        user_map =seed_users(cur)
+        user_map = seed_users(cur)
         
         seed_national_rail_bookings(cur, user_map)
         seed_metro_travels(cur, user_map)
