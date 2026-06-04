@@ -73,15 +73,17 @@ def query_line_stations(line_id: str) -> list[dict]:
         #    {station_id:"MS05", name:"Westfield",       sequence:1},
         #    {station_id:"MS01", name:"Central Square",  sequence:2}, ...]
     """
-    # Detect network from line prefix so we query only the relevant rel type
+    # Detect network from line prefix so we query only the relevant label + rel type
     if line_id.startswith("NR"):
-        rel_type = "RAIL_LINK"
+        node_label = "NationalRailStation"
+        rel_type   = "RAIL_LINK"
     else:
-        rel_type = "METRO_LINK"
+        node_label = "MetroStation"
+        rel_type   = "METRO_LINK"
 
     cypher = f"""
     // Find one end-station of the line (degree 1 on this line = terminus)
-    MATCH (terminus)-[r:{rel_type} {{line: $line_id}}]-()
+    MATCH (terminus:{node_label})-[r:{rel_type} {{line: $line_id}}]-()
     WITH terminus, count(r) AS degree
     ORDER BY degree ASC
     LIMIT 1
@@ -96,7 +98,7 @@ def query_line_stations(line_id: str) -> list[dict]:
         sequence
     UNION
     // Also include the terminus itself (sequence 0)
-    MATCH (terminus)-[r:{rel_type} {{line: $line_id}}]-()
+    MATCH (terminus:{node_label})-[r:{rel_type} {{line: $line_id}}]-()
     WITH terminus, count(r) AS degree
     ORDER BY degree ASC
     LIMIT 1
@@ -133,7 +135,11 @@ def query_shortest_route(
     network: str = "auto",
 ) -> dict:
     """
-    Find the shortest (fastest) route between any two stations.
+    Find the fastest route between any two stations using Dijkstra by travel_time_min.
+
+    Uses apoc.algo.dijkstra to minimise total travel time. INTERCHANGE_TO edges
+    (which carry walk_time_min instead of travel_time_min) are given a default
+    weight of 5.0 min, matching the walk_time_min seeded in seed_neo4j.py.
 
     Args:
         origin_id:      Station ID, e.g. "MS01" or "NR01".
@@ -144,10 +150,13 @@ def query_shortest_route(
 
     Returns:
         dict with keys:
-            found      (bool)
-            total_time (int, minutes — sum of travel_time_min / walk_time_min)
-            path       (list of dicts: station_id, name, label)
-        Returns {"found": False, "total_time": None, "path": []} if no route.
+            found           (bool)
+            origin_id       (str)
+            destination_id  (str)
+            total_time_min  (int, minutes)
+            path            (list of dicts: station_id, name, label)
+            legs            (list of dicts: from_station_id, to_station_id)
+        Returns {"found": False, ...} if no route.
     """
     if network == "metro":
         rel_filter = "METRO_LINK"
@@ -157,22 +166,21 @@ def query_shortest_route(
         rel_filter = "METRO_LINK|RAIL_LINK|INTERCHANGE_TO"
 
     cypher = f"""
-    MATCH (origin  WHERE origin.station_id  = $origin_id)
-    MATCH (dest    WHERE dest.station_id    = $destination_id)
-    MATCH p = shortestPath((origin)-[:{rel_filter}*]-(dest))
-    WITH p,
-         reduce(t = 0, r IN relationships(p) |
+    MATCH (origin:MetroStation|NationalRailStation WHERE origin.station_id = $origin_id)
+    MATCH (dest:MetroStation|NationalRailStation WHERE dest.station_id = $destination_id)
+    CALL apoc.algo.dijkstra(origin, dest, '{rel_filter}', 'travel_time_min', 5.0)
+    YIELD path, weight
+    WITH path,
+         reduce(t = 0, r IN relationships(path) |
              t + coalesce(r.travel_time_min, r.walk_time_min, 0)
          ) AS total_time
     RETURN
-        [node IN nodes(p) | {{
+        [node IN nodes(path) | {{
             station_id : node.station_id,
             name       : node.name,
             label      : labels(node)[0]
         }}] AS path,
         total_time
-    ORDER BY total_time ASC
-    LIMIT 1
     """
 
     with _driver() as driver:
@@ -185,11 +193,26 @@ def query_shortest_route(
             row = result.single()
 
     if row is None:
-        return {"found": False, "total_time": None, "path": []}
+        return {
+            "found": False,
+            "origin_id": origin_id,
+            "destination_id": destination_id,
+            "total_time_min": None,
+            "path": [],
+            "legs": [],
+        }
+    path = list(row["path"])
+    legs = [
+        {"from_station_id": path[i]["station_id"], "to_station_id": path[i + 1]["station_id"]}
+        for i in range(len(path) - 1)
+    ]
     return {
         "found": True,
-        "total_time": row["total_time"],
-        "path": list(row["path"]),
+        "origin_id": origin_id,
+        "destination_id": destination_id,
+        "total_time_min": row["total_time"],
+        "path": path,
+        "legs": legs,
     }
 
 
@@ -205,22 +228,28 @@ def query_cheapest_route(
     fare_class: str = "standard",
 ) -> dict:
     """
-    Find the route with the fewest intermediate stops (cheapest fare proxy).
+    Find the cheapest route using Dijkstra with uniform edge weights (fewest hops proxy).
+
+    The graph layer has no fare data; cheapest is approximated as fewest intermediate
+    stops via apoc.algo.dijkstra with a uniform weight of 1.0 per hop.  Actual fare
+    should be computed by the relational layer once the path is known.
 
     Args:
         origin_id:      Station ID for journey start.
         destination_id: Station ID for journey end.
         network:        "metro", "rail", or "auto".
-        fare_class:     Passed through for context only.
+        fare_class:     "standard" or "first" — passed through for relational fare lookup.
 
     Returns:
         dict with keys:
-            found       (bool)
-            stops       (int  — number of intermediate stations)
-            total_time  (int  — total minutes)
-            fare_class  (str)
-            path        (list of dicts: station_id, name, label)
-        Returns {"found": False} if no route exists.
+            found           (bool)
+            total_fare_usd  (None — use relational query for actual fare)
+            stations        (list of dicts: station_id, name, label)
+            legs            (list of dicts: from_station_id, to_station_id)
+            stops           (int  — intermediate stations)
+            total_time      (int  — total minutes)
+            fare_class      (str)
+        Returns {"found": False, ...} if no route exists.
     """
     if network == "metro":
         rel_filter = "METRO_LINK"
@@ -230,24 +259,22 @@ def query_cheapest_route(
         rel_filter = "METRO_LINK|RAIL_LINK|INTERCHANGE_TO"
 
     cypher = f"""
-    MATCH (origin WHERE origin.station_id = $origin_id)
-    MATCH (dest   WHERE dest.station_id   = $destination_id)
-    MATCH p = shortestPath((origin)-[:{rel_filter}*]-(dest))
-    WITH p,
-         length(p) - 1 AS stops,
-         reduce(t = 0, r IN relationships(p) |
+    MATCH (origin:MetroStation|NationalRailStation WHERE origin.station_id = $origin_id)
+    MATCH (dest:MetroStation|NationalRailStation WHERE dest.station_id = $destination_id)
+    CALL apoc.algo.dijkstra(origin, dest, '{rel_filter}', 'hop_cost', 1.0)
+    YIELD path, weight
+    WITH path, weight,
+         reduce(t = 0, r IN relationships(path) |
              t + coalesce(r.travel_time_min, r.walk_time_min, 0)
          ) AS total_time
     RETURN
-        [node IN nodes(p) | {{
+        [node IN nodes(path) | {{
             station_id : node.station_id,
             name       : node.name,
             label      : labels(node)[0]
         }}] AS path,
-        stops,
+        toInteger(weight) - 1 AS stops,
         total_time
-    ORDER BY stops ASC, total_time ASC
-    LIMIT 1
     """
 
     with _driver() as driver:
@@ -260,13 +287,28 @@ def query_cheapest_route(
             row = result.single()
 
     if row is None:
-        return {"found": False, "stops": None, "total_time": None, "path": []}
+        return {
+            "found": False,
+            "total_fare_usd": None,
+            "stations": [],
+            "legs": [],
+            "stops": None,
+            "total_time": None,
+            "fare_class": fare_class,
+        }
+    stations = list(row["path"])
+    legs = [
+        {"from_station_id": stations[i]["station_id"], "to_station_id": stations[i + 1]["station_id"]}
+        for i in range(len(stations) - 1)
+    ]
     return {
         "found": True,
+        "total_fare_usd": None,   # graph layer has no fare data; use relational query for actual fare
+        "stations": stations,
+        "legs": legs,
         "stops": row["stops"],
         "total_time": row["total_time"],
         "fare_class": fare_class,
-        "path": list(row["path"]),
     }
 
 
@@ -305,8 +347,8 @@ def query_alternative_routes(
         rel_filter = "METRO_LINK|RAIL_LINK|INTERCHANGE_TO"
 
     cypher = f"""
-    MATCH (origin WHERE origin.station_id = $origin_id)
-    MATCH (dest   WHERE dest.station_id   = $destination_id)
+    MATCH (origin:MetroStation|NationalRailStation WHERE origin.station_id = $origin_id)
+    MATCH (dest:MetroStation|NationalRailStation WHERE dest.station_id = $destination_id)
     MATCH p = (origin)-[:{rel_filter}*1..15]-(dest)
     WHERE NONE(n IN nodes(p) WHERE n.station_id = $avoid_station_id)
     WITH p,
@@ -369,8 +411,8 @@ def query_interchange_path(
         Returns {"found": False} if no cross-network path exists.
     """
     cypher = """
-    MATCH (origin WHERE origin.station_id = $origin_id)
-    MATCH (dest   WHERE dest.station_id   = $destination_id)
+    MATCH (origin:MetroStation|NationalRailStation WHERE origin.station_id = $origin_id)
+    MATCH (dest:MetroStation|NationalRailStation WHERE dest.station_id = $destination_id)
     MATCH p = shortestPath((origin)-[:METRO_LINK|RAIL_LINK|INTERCHANGE_TO*]-(dest))
     WHERE ANY(r IN relationships(p) WHERE type(r) = 'INTERCHANGE_TO')
     WITH p,
@@ -401,12 +443,12 @@ def query_interchange_path(
             row = result.single()
 
     if row is None:
-        return {"found": False, "total_time": None, "path": [], "interchange_at": []}
+        return {"found": False, "total_time_min": None, "stations": [], "interchange_at": []}
     return {
         "found": True,
-        "total_time": row["total_time"],
+        "total_time_min": row["total_time"],
         "interchange_at": list(row["interchange_at"]),
-        "path": list(row["path"]),
+        "stations": list(row["path"]),
     }
 
 
@@ -438,16 +480,17 @@ def query_delay_ripple(
     # $hops cannot be a Cypher parameter in a variable-length path bound,
     # so interpolate it directly into the query string.
     cypher = f"""
-    MATCH (src WHERE src.station_id = $station_id)
+    MATCH (src:MetroStation|NationalRailStation WHERE src.station_id = $station_id)
     MATCH p = (src)-[:METRO_LINK|RAIL_LINK*1..{hops}]-(affected)
     WHERE affected.station_id <> $station_id
-    WITH affected, min(length(p)) AS hop_distance
+    WITH affected, min(length(p)) AS hops_away
     RETURN
         affected.station_id AS station_id,
         affected.name       AS name,
         labels(affected)[0] AS label,
-        hop_distance
-    ORDER BY hop_distance ASC, affected.station_id ASC
+        affected.lines      AS lines_affected,
+        hops_away
+    ORDER BY hops_away ASC, affected.station_id ASC
     """
 
     with _driver() as driver:
@@ -485,7 +528,7 @@ def query_station_connections(station_id: str) -> list[dict]:
     # Use directed -> since seed_neo4j.py creates both (a)->(b) and (b)->(a)
     # for METRO_LINK / RAIL_LINK, and both directions explicitly for INTERCHANGE_TO.
     cypher = """
-    MATCH (src WHERE src.station_id = $station_id)
+    MATCH (src:MetroStation|NationalRailStation WHERE src.station_id = $station_id)
     MATCH (src)-[r:METRO_LINK|RAIL_LINK|INTERCHANGE_TO]->(neighbour)
     RETURN DISTINCT
         neighbour.station_id AS neighbour_id,
