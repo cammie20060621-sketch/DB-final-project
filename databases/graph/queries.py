@@ -307,7 +307,7 @@ def query_alternative_routes(
     cypher = f"""
     MATCH (origin WHERE origin.station_id = $origin_id)
     MATCH (dest   WHERE dest.station_id   = $destination_id)
-    MATCH p = (origin)-[:{rel_filter}*]-(dest)
+    MATCH p = (origin)-[:{rel_filter}*1..15]-(dest)
     WHERE NONE(n IN nodes(p) WHERE n.station_id = $avoid_station_id)
     WITH p,
          reduce(t = 0, r IN relationships(p) |
@@ -435,9 +435,11 @@ def query_delay_ripple(
             hop_distance  (int — 1 = direct neighbour, 2 = two hops away, etc.)
         Sorted by hop_distance ASC. Returns [] if station not found.
     """
-    cypher = """
+    # $hops cannot be a Cypher parameter in a variable-length path bound,
+    # so interpolate it directly into the query string.
+    cypher = f"""
     MATCH (src WHERE src.station_id = $station_id)
-    MATCH p = (src)-[:METRO_LINK|RAIL_LINK*1..$hops]-(affected)
+    MATCH p = (src)-[:METRO_LINK|RAIL_LINK*1..{hops}]-(affected)
     WHERE affected.station_id <> $station_id
     WITH affected, min(length(p)) AS hop_distance
     RETURN
@@ -453,7 +455,6 @@ def query_delay_ripple(
             result = session.run(
                 cypher,
                 station_id=delayed_station_id,
-                hops=hops,
             )
             return [dict(record) for record in result]
 
@@ -481,10 +482,12 @@ def query_station_connections(station_id: str) -> list[dict]:
             walk_time_min      (int or None)
         Returns [] if station not found or has no connections.
     """
+    # Use directed -> since seed_neo4j.py creates both (a)->(b) and (b)->(a)
+    # for METRO_LINK / RAIL_LINK, and both directions explicitly for INTERCHANGE_TO.
     cypher = """
     MATCH (src WHERE src.station_id = $station_id)
     MATCH (src)-[r:METRO_LINK|RAIL_LINK|INTERCHANGE_TO]->(neighbour)
-    RETURN
+    RETURN DISTINCT
         neighbour.station_id AS neighbour_id,
         neighbour.name       AS neighbour_name,
         labels(neighbour)[0] AS neighbour_label,
