@@ -125,24 +125,8 @@ CREATE TABLE national_rail_stations (
     is_interchange_national_rail            BOOLEAN NOT NULL DEFAULT FALSE,
     interchange_national_rail_station_lines TEXT[],
     interchange_metro_station_id            VARCHAR(10),
-
-    CONSTRAINT chk_national_rail_interchange_lines
-    CHECK (
-        (
-            is_interchange_national_rail = TRUE
-            AND interchange_national_rail_station_lines IS NOT NULL
-            AND array_length(interchange_national_rail_station_lines, 1) > 0
-        )
-        OR
-        (
-            is_interchange_national_rail = FALSE
-            AND (
-                interchange_national_rail_station_lines IS NULL
-                OR array_length(interchange_national_rail_station_lines, 1) = 0
-            )
-        )
-    )
 );
+
 
 
 -- ============================================================
