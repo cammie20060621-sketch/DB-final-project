@@ -56,6 +56,8 @@ def insert_many(cur, table, columns, rows):
 # ── seeders ──────────────────────────────────────────────────────────────────
 
 def seed_metro_stations(cur):
+    # Load metro station data and insert into metro_stations table.
+    # Includes zone info and interchange flags for metro/national rail connections.
     data = load("metro_stations.json")
     table = "metro_stations"
     columns = ["station_id", "name", "zone", "is_interchange_metro", "is_interchange_national_rail", "interchange_rail_station_id"]
@@ -74,6 +76,8 @@ def seed_metro_stations(cur):
 
 
 def seed_national_rail_stations(cur):
+    # Load national rail station data and insert into national_rail_stations table.
+    # Includes city, interchange flags, and linked metro station references.
     data = load("national_rail_stations.json")
     table = "national_rail_stations"
     columns = [
@@ -96,6 +100,8 @@ def seed_national_rail_stations(cur):
     print(f"  -> Inserted {inserted} rows into {table}")
 
 def seed_metro_schedules(cur):
+    # Load metro schedule data and insert into metro_schedules and metro_schedule_stops.
+    # Each schedule contains ordered stops which are extracted into a separate table.
     data = load("metro_schedules.json")
 
     schedule_table = "metro_schedules"
@@ -114,6 +120,7 @@ def seed_metro_schedules(cur):
     stop_rows = []
 
     for item in data:
+        # Build one row per schedule
         schedule_rows.append(
             (
                 item["schedule_id"],
@@ -126,7 +133,7 @@ def seed_metro_schedules(cur):
                 item["per_stop_rate_usd"],
             )
         )
-
+        # Build one row per stop, preserving stop order (1-indexed)
         for index, station_id in enumerate(item["stops_in_order"], start=1):
             stop_rows.append(
                 (
@@ -149,6 +156,9 @@ def seed_metro_schedules(cur):
 
 
 def seed_national_rail_schedules(cur):
+    # Load national rail schedule data and insert into three related tables:
+    # national_rail_schedules, national_rail_schedule_stops, and national_rail_fare_classes.
+    # Standard fare is stored directly on the schedule; all fare classes go into the fare class table.
     data = load("national_rail_schedules.json")
 
     schedule_table = "national_rail_schedules"
@@ -168,6 +178,9 @@ def seed_national_rail_schedules(cur):
     fare_class_rows = []
 
     for item in data:
+        # 1. Insert basic schedule data.
+        # Because the real fare by class is stored in national_rail_fare_classes,
+        # we store the standard fare here as the default fare.
         fare_classes = item.get("fare_classes", {})
         standard_fare = fare_classes.get("standard", {})
 
@@ -228,6 +241,9 @@ def seed_national_rail_schedules(cur):
     print(f"  -> Inserted {inserted_fares} rows into national_rail_fare_classes")
     
 def seed_seat_layouts(cur):
+    # Load seat layout data and insert into three related tables:
+    # national_rail_seat_layouts (top-level), national_rail_coaches (per coach),
+    # and national_rail_seats (individual seats within each coach).
     data = load("national_rail_seat_layouts.json")
 
     layout_rows = []
@@ -367,6 +383,7 @@ def seed_ticket_types(cur):
     print(f"  -> Inserted {inserted_rules} rows into ticket_type_rules")
 
 def seed_ticket_types(cur):
+    # Load ticket type definitions and insert display name, available networks, and description.
     data = load("ticket_types.json")
     table = "ticket_types"
     columns = ["ticket_type", "display_name", "available_on", "description"]
@@ -374,7 +391,7 @@ def seed_ticket_types(cur):
     rows = [(
         item["ticket_type"],
         item.get("display_name", ""),
-        item.get("available_on", []),  # psycopg2 會自動轉為 PostgreSQL array
+        item.get("available_on", []),
         item.get("description", "")
     ) for item in data]
     
@@ -382,6 +399,8 @@ def seed_ticket_types(cur):
     print(f"  -> Inserted {inserted} rows into {table}")
 
 def seed_ticket_type_rules(cur):
+    # Load ticket type rules and insert one row per (ticket_type, network) combination.
+    # Handles both metro and national_rail rules separately from the same source file.
     data = load("ticket_types.json")
     table = "ticket_type_rules"
     columns = [
@@ -438,6 +457,9 @@ def seed_ticket_type_rules(cur):
     print(f"  -> Inserted {inserted} rows into {table}")
 
 def seed_users(cur):
+    # Load registered user data and insert into registered_users table.
+    # Handles variations in name fields (name vs first_name + surname).
+    # Falls back to a default password if no password field is found.
     import hashlib
     
     data = load("registered_users.json")
@@ -458,13 +480,14 @@ def seed_users(cur):
     rows = []
 
     for item in data:
+        # Normalise name: prefer "name", fall back to "first_name" + "surname"
         name = item.get("name")
 
         if not name:
             first_name = item.get("first_name", "")
             surname = item.get("surname", "")
             name = f"{first_name} {surname}".strip()
-
+        # Accept any password field variant; default if none found
         password_value = (
             item.get("password_hash")
             or item.get("password")
@@ -488,10 +511,12 @@ def seed_users(cur):
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-
+    Return a user_id -> user_id identity map for use by dependent seeders
     return {item["user_id"]: item["user_id"] for item in data}
 
 def seed_national_rail_bookings(cur, user_map):
+    # Load booking data and insert into the bookings table.
+    # Resolves layout_id from the schedule if not already present in the booking record.
     data = load("bookings.json")
 
     # schedule_id -> layout_id
@@ -525,6 +550,8 @@ def seed_national_rail_bookings(cur, user_map):
     for item in data:
         user_id = user_map.get(item["user_id"], item["user_id"])
         schedule_id = item["schedule_id"]
+        
+        # Use layout_id from the record, or fall back to the schedule lookup
         layout_id = item.get("layout_id") or schedule_layout_map.get(schedule_id)
 
         if not layout_id:
@@ -552,6 +579,9 @@ def seed_national_rail_bookings(cur, user_map):
     print(f"  -> Inserted {inserted} rows into {table}")
 
 def seed_metro_travels(cur, user_map):
+    # Load metro travel history and insert into metro_travel_history table.
+    # Maps purchased_at -> tap_in_time and travelled_at -> tap_out_time.
+    # tap_out_time is only set for completed trips.
     data = load("metro_travel_history.json")
 
     table = "metro_travel_history"
@@ -605,6 +635,9 @@ def seed_metro_travels(cur, user_map):
     print(f"  -> Inserted {inserted} rows into {table}")
 
 def seed_payments(cur):
+    # Load payment data and insert into the payments table.
+    # Resolves user_id by looking up the linked booking or metro trip.
+    # Determines whether the source is a booking (BK prefix) or metro trip (MT prefix).
     data = load("payments.json")
 
     # booking_id -> user_id
@@ -644,6 +677,7 @@ def seed_payments(cur):
     for item in data:
         source_id = item["booking_id"]
 
+        # Route to bookings or metro trips based on ID prefix
         if source_id.startswith("BK"):
             booking_id = source_id
             trip_id = None
@@ -677,6 +711,9 @@ def seed_payments(cur):
     print(f"  -> Inserted {inserted} rows into {table}")
 
 def seed_feedback(cur, user_map):
+    # Load feedback data and insert into the feedback table.
+    # Resolves user_id from the linked booking or metro trip if not directly provided.
+    # Handles both "comments" and "comment" field name variants.
     data = load("feedback.json")
 
     # booking_id -> user_id
@@ -715,6 +752,7 @@ def seed_feedback(cur, user_map):
     for item in data:
         source_id = item.get("booking_id") or item.get("trip_id")
 
+        # Route to bookings or metro trips based on ID prefix
         if source_id.startswith("BK"):
             booking_id = source_id
             trip_id = None
@@ -753,12 +791,15 @@ def seed_feedback(cur, user_map):
 def main():
     print("Connecting to PostgreSQL...")
     conn = connect()
-    conn.autocommit = False
+    conn.autocommit = False # Use explicit transaction so we can rollback on error
     cur = conn.cursor()
 
     try:
         print("Seeding tables (dependency order):")
+
+        # Defer FK constraint checks so tables can be seeded in any order within the transaction
         cur.execute("SET CONSTRAINTS ALL DEFERRED;")
+        # Seed reference/lookup tables first (no foreign key dependencies)
         seed_metro_stations(cur)
         seed_national_rail_stations(cur)
         seed_metro_schedules(cur)
@@ -767,17 +808,24 @@ def main():
         seed_ticket_types(cur)
         seed_ticket_type_rules(cur)
         
+        # Seed users and capture the user_id map for dependent tables
         user_map =seed_users(cur)
         seed_ticket_types(cur)
         
+        # Seed transactional tables that depend on users, schedules, and seats
         seed_national_rail_bookings(cur, user_map)
         seed_metro_travels(cur, user_map)
+
+        # Seed payments after bookings and trips exist (for user_id resolution)
         seed_payments(cur)
+
+        # Seed feedback last as it references both bookings and metro trips
         seed_feedback(cur, user_map)
         
         conn.commit()
         print("\nAll done. Database seeded successfully.")
     except Exception as e:
+        # Roll back the entire transaction on any failure to keep the DB clean
         conn.rollback()
         print(f"\nError: {e}")
         raise

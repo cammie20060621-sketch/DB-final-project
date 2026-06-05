@@ -55,6 +55,7 @@ DROP TABLE IF EXISTS metro_schedules CASCADE;
 DROP TABLE IF EXISTS national_rail_seats CASCADE;
 DROP TABLE IF EXISTS national_rail_coaches CASCADE;
 DROP TABLE IF EXISTS national_rail_seat_layouts CASCADE;
+DROP TABLE IF EXISTS national_rail_fare_classes CASCADE;
 DROP TABLE IF EXISTS national_rail_schedule_stops CASCADE;
 DROP TABLE IF EXISTS national_rail_schedules CASCADE;
 
@@ -124,25 +125,9 @@ CREATE TABLE national_rail_stations (
     is_interchange_metro                    BOOLEAN NOT NULL DEFAULT FALSE,
     is_interchange_national_rail            BOOLEAN NOT NULL DEFAULT FALSE,
     interchange_national_rail_station_lines TEXT[],
-    interchange_metro_station_id            VARCHAR(10),
-
-    CONSTRAINT chk_national_rail_interchange_lines
-    CHECK (
-        (
-            is_interchange_national_rail = TRUE
-            AND interchange_national_rail_station_lines IS NOT NULL
-            AND array_length(interchange_national_rail_station_lines, 1) > 0
-        )
-        OR
-        (
-            is_interchange_national_rail = FALSE
-            AND (
-                interchange_national_rail_station_lines IS NULL
-                OR array_length(interchange_national_rail_station_lines, 1) = 0
-            )
-        )
-    )
+    interchange_metro_station_id            VARCHAR(10)
 );
+
 
 
 -- ============================================================
@@ -232,9 +217,31 @@ CREATE TABLE national_rail_schedules (
     CHECK (service_type IN ('express', 'local', 'normal'))
 );
 
+-- ============================================================
+-- 8. NATIONAL RAIL FARE CLASSES
+-- Each schedule can have multiple fare classes (e.g. standard, first).
+-- ============================================================
+
+CREATE TABLE national_rail_fare_classes (
+    schedule_id        VARCHAR(20) NOT NULL,
+    fare_class         VARCHAR(20) NOT NULL,
+    base_fare_usd      DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    per_stop_fare_usd  DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+
+    PRIMARY KEY (schedule_id, fare_class),
+
+    FOREIGN KEY (schedule_id)
+        REFERENCES national_rail_schedules(schedule_id)
+        ON DELETE CASCADE,
+
+    CHECK (fare_class IN ('standard', 'first')),
+    CHECK (base_fare_usd >= 0),
+    CHECK (per_stop_fare_usd >= 0)
+);
+
 
 -- ============================================================
--- 8. NATIONAL RAIL SCHEDULE STOPS
+-- 9. NATIONAL RAIL SCHEDULE STOPS
 -- ============================================================
 
 CREATE TABLE national_rail_schedule_stops (
@@ -258,7 +265,7 @@ CREATE TABLE national_rail_schedule_stops (
 
 
 -- ============================================================
--- 9. NATIONAL RAIL SEAT LAYOUTS
+-- 10. NATIONAL RAIL SEAT LAYOUTS
 -- Source file: national_rail_seat_layouts.json
 -- ============================================================
 
@@ -273,7 +280,7 @@ CREATE TABLE national_rail_seat_layouts (
 
 
 -- ============================================================
--- 10. NATIONAL RAIL COACHES
+-- 11. NATIONAL RAIL COACHES
 -- ============================================================
 
 CREATE TABLE national_rail_coaches (
@@ -292,7 +299,7 @@ CREATE TABLE national_rail_coaches (
 
 
 -- ============================================================
--- 11. NATIONAL RAIL SEATS
+-- 12. NATIONAL RAIL SEATS
 -- ============================================================
 
 CREATE TABLE national_rail_seats (
@@ -314,7 +321,7 @@ CREATE TABLE national_rail_seats (
 
 
 -- ============================================================
--- 12. TICKET TYPES
+-- 13. TICKET TYPES
 -- Source file: ticket_types.json
 -- ============================================================
 
@@ -329,7 +336,7 @@ CREATE TABLE ticket_types (
 
 
 -- ============================================================
--- 13. TICKET TYPE RULES
+-- 14. TICKET TYPE RULES
 -- Source file: ticket_types.json
 -- ============================================================
 
@@ -370,7 +377,7 @@ CREATE TABLE ticket_type_rules (
 
 
 -- ============================================================
--- 14. METRO TRAVEL HISTORY
+-- 15. METRO TRAVEL HISTORY
 -- Source file: metro_travel_history.json
 -- ============================================================
 
@@ -407,7 +414,7 @@ CREATE TABLE metro_travel_history (
         REFERENCES ticket_types(ticket_type)
         ON DELETE CASCADE,
 
-    CHECK (tap_out_time IS NULL OR tap_out_time > tap_in_time),
+    CHECK (tap_out_time IS NULL OR tap_out_time >= tap_in_time),
     CHECK (amount_usd >= 0),
     CHECK (status IN ('completed', 'in_progress', 'cancelled')),
     CHECK (
@@ -418,7 +425,7 @@ CREATE TABLE metro_travel_history (
 
 
 -- ============================================================
--- 15. BOOKINGS
+-- 16. BOOKINGS
 -- Source file: bookings.json
 -- Purpose: National rail advance bookings.
 -- ============================================================
@@ -460,7 +467,7 @@ CREATE TABLE bookings (
 
 
 -- ============================================================
--- 16. PAYMENTS
+-- 17. PAYMENTS
 -- Source file: payments.json
 -- Payment can belong to either a booking or a metro trip.
 -- ============================================================
@@ -498,14 +505,15 @@ CREATE TABLE payments (
 
 
 -- ============================================================
--- 17. FEEDBACK
+-- 18. FEEDBACK
 -- Source file: feedback.json
 -- ============================================================
 
 CREATE TABLE feedback (
     feedback_id     VARCHAR(20) PRIMARY KEY,
     user_id         VARCHAR(20) NOT NULL,
-    booking_id      VARCHAR(20) NOT NULL,
+    booking_id      VARCHAR(20),
+    trip_id         VARCHAR(20),
     rating          INTEGER NOT NULL,
     comments        TEXT,
     feedback_date   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -518,12 +526,21 @@ CREATE TABLE feedback (
         REFERENCES bookings(booking_id)
         ON DELETE CASCADE,
 
+    FOREIGN KEY (trip_id)
+        REFERENCES metro_travel_history(trip_id)
+        ON DELETE CASCADE,
+
+    CHECK (
+        (booking_id IS NOT NULL AND trip_id IS NULL)
+        OR
+        (booking_id IS NULL AND trip_id IS NOT NULL)
+    ),
     CHECK (rating BETWEEN 1 AND 5)
 );
 
 
 -- ============================================================
--- 18. REFUND POLICY
+-- 19. REFUND POLICY
 -- Source file: refund_policy.json
 -- ============================================================
 
@@ -545,7 +562,7 @@ CREATE TABLE refund_policy (
 
 
 -- ============================================================
--- 19. REFUND POLICY WINDOWS
+-- 20. REFUND POLICY WINDOWS
 -- Source file: refund_policy.json
 -- ============================================================
 
@@ -575,7 +592,7 @@ CREATE TABLE refund_policy_windows (
 
 
 -- ============================================================
--- 20. BOOKING RULES
+-- 21. BOOKING RULES
 -- Source file: booking_rules.json
 -- ============================================================
 
@@ -594,7 +611,7 @@ CREATE TABLE booking_rules (
 
 
 -- ============================================================
--- 21. TRAVEL POLICIES
+-- 22. TRAVEL POLICIES
 -- Source file: travel_policies.json
 -- ============================================================
 

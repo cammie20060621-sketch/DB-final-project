@@ -21,6 +21,8 @@ TransitFlow is a Python-based AI chat assistant for a fictional transit operator
 - Web UI: Gradio
 - LLM: Google Gemini or local Ollama (configured via `.env`)
 
+> **Port & connection config:** Database ports and credentials are **not** hardcoded — copy `.env.example` to `.env` and fill in your values before running. Key variables include `POSTGRES_PORT` (default `5433`), `NEO4J_PORT` (default `7688`), and `NEO4J_URI` / `POSTGRES_*` credentials. Each team member must set up their own `.env` locally.
+
 ## Coding Conventions
 
 - **Naming:** `snake_case` for all Python names and SQL identifiers
@@ -425,20 +427,77 @@ CREATE INDEX IF NOT EXISTS idx_policy_documents_embedding
 
 ## Agreed Graph Schema
 
-<!-- ============================================================
-  FILL THIS IN after your team agrees on Neo4j node labels and
-  relationship types.
-  ============================================================ -->
+### Node Labels
 
-```
-Node labels:
-- TODO
+| Label | Station ID range | Description |
+|---|---|---|
+| `MetroStation` | MS01 – MS20 | Urban metro network stations |
+| `NationalRailStation` | NR01 – NR10 | National rail network stations |
 
-Relationship types:
-- TODO
+**`MetroStation` properties:**
+| Property | Type | Example |
+|---|---|---|
+| `station_id` | `string` | `"MS01"` |
+| `name` | `string` | `"Central Square"` |
+| `lines` | `string[]` | `["M1", "M2"]` |
+| `is_interchange_metro` | `boolean` | `true` |
+| `is_interchange_national_rail` | `boolean` | `true` |
 
-Key properties:
-- TODO
+**`NationalRailStation` properties:**
+| Property | Type | Example |
+|---|---|---|
+| `station_id` | `string` | `"NR01"` |
+| `name` | `string` | `"Central Station"` |
+| `lines` | `string[]` | `["NR1", "NR2"]` |
+| `is_interchange_metro` | `boolean` | `true` |
+| `is_interchange_national_rail` | `boolean` | `true` |
+
+### Relationship Types
+
+| Type | From → To | Direction | Description |
+|---|---|---|---|
+| `METRO_LINK` | `MetroStation` → `MetroStation` | Both directions seeded | Adjacent metro stations on a shared line |
+| `RAIL_LINK` | `NationalRailStation` → `NationalRailStation` | Both directions seeded | Adjacent national rail stations on a shared line |
+| `INTERCHANGE_TO` | `MetroStation` ↔ `NationalRailStation` | Both directions seeded | Physical walk between co-located metro and rail stations |
+
+**`METRO_LINK` properties:**
+| Property | Type | Example |
+|---|---|---|
+| `line` | `string` | `"M1"` |
+| `travel_time_min` | `integer` | `3` |
+
+**`RAIL_LINK` properties:**
+| Property | Type | Example |
+|---|---|---|
+| `line` | `string` | `"NR1"` |
+| `travel_time_min` | `integer` | `12` |
+
+**`INTERCHANGE_TO` properties:**
+| Property | Type | Default |
+|---|---|---|
+| `walk_time_min` | `integer` | `5` |
+| `accessible` | `boolean` | `true` |
+
+### Line IDs
+
+- Metro lines: `M1`, `M2`, `M3`, `M4`
+- National rail lines: `NR1`, `NR2`
+
+### Key Design Decisions
+
+1. **Bidirectional relationships:** `METRO_LINK` and `RAIL_LINK` are directed (`a→b`) but both directions are seeded for every pair, so `shortestPath` and undirected traversals work correctly.
+2. **Interchange pairs:** `INTERCHANGE_TO` is seeded explicitly in both directions (MS→NR and NR→MS) with a fixed 5-minute walk time.
+3. **Network separation:** Metro and national rail nodes use distinct labels so queries can filter by network (`METRO_LINK` only vs `RAIL_LINK` only vs all).
+4. **`hops` in variable-length paths:** Cypher does not accept query parameters inside path-length bounds (`*1..N`). The `hops` value in `query_delay_ripple` is embedded directly via Python f-string interpolation — not passed as `$hops`.
+
+```cypher
+// Example: all stations on M1
+MATCH (a:MetroStation)-[:METRO_LINK {line: "M1"}]->(b:MetroStation)
+RETURN a.station_id, a.name, b.station_id, b.name
+
+// Example: cross-network interchange
+MATCH (m:MetroStation {station_id: "MS01"})-[:INTERCHANGE_TO]->(r:NationalRailStation)
+RETURN m.name, r.name, r.station_id
 ```
 
 ## Function Signatures We Are Implementing
@@ -485,20 +544,91 @@ def query_station_connections(station_id: str) -> list[dict]: ...
 
 <!-- Add entries as you make decisions. Format: "Decision: X. Why: Y." -->
 
-- [ ] Schema design: TODO — add your table/column decisions here
-- [ ] Graph schema: TODO — add your node label and relationship type decisions here
-- [ ] (example) Metro schedule stop ordering: using `jsonb_array_elements` approach — easier to debug than containment operators
+### Relational Schema
+- [x] **Separate table families for metro and rail.** Metro and national rail are modelled as completely separate table families (stations, schedules, stop lists, travel records). Why: the two networks have different properties (e.g. rail has seat coaches and fare classes; metro does not), so a single unified table would need many nullable columns.
+- [x] **Stop ordering as a join table, not an array.** `metro_schedule_stops` and `national_rail_schedule_stops` store a `stop_order` integer rather than a JSON/array column. Why: enables SQL `ORDER BY stop_order` and `WHERE stop_order BETWEEN` without needing `jsonb_array_elements`, which makes availability queries and stop-count calculations straightforward.
+- [x] **Three-level seat layout normalisation.** National rail seat layout is split into `national_rail_seat_layouts` → `national_rail_coaches` → `national_rail_seats`. Why: matches the nested JSON source data structure and allows querying available seats by coach and fare class independently.
+- [x] **Payments use a mutual-exclusion CHECK.** `payments` carries both `booking_id` and `trip_id` FKs, with a `CHECK` that exactly one is non-null. Why: a single payments table covers both national rail bookings and metro tap-in/tap-out trips, avoiding two separate payment tables with identical columns.
+- [x] **Mutual interchange FK declared DEFERRABLE.** The cross-reference FKs between `metro_stations` and `national_rail_stations` are added via `ALTER TABLE … DEFERRABLE INITIALLY DEFERRED`. Why: the two tables reference each other, so normal FK constraints would reject inserts before both rows exist; deferring validation to commit time allows seed data to load in any order.
+- [x] **`bookings.amount_usd` is a snapshot.** The fare is stored at booking time, not derived from current pricing tables. Why: pricing rules may change after booking; preserving the original amount_usd ensures historical records and refund calculations remain correct.
+
+### Graph Schema
+- [x] **Separate node labels for each network.** `MetroStation` and `NationalRailStation` are distinct labels rather than a generic `Station` label. Why: allows Cypher to filter by network using label syntax (`MATCH (n:MetroStation)`) without an extra `network` property, and keeps relationship types (`METRO_LINK` vs `RAIL_LINK`) cleanly scoped to each network.
+- [x] **`travel_time_min` as edge weight on links.** `METRO_LINK` and `RAIL_LINK` both carry a `travel_time_min` integer property. Why: `shortestPath` in Cypher finds the minimum-hop path; total journey time is computed afterwards by summing `travel_time_min` across relationships with `reduce()`. This separates hop-count routing from time calculation.
+- [x] **Both directions seeded for every link.** Each `METRO_LINK` and `RAIL_LINK` pair is seeded in both directions (a→b and b→a) by iterating each station's `adjacent_stations` list. Why: `shortestPath` and undirected `MATCH` patterns work correctly; no need for undirected relationship type workarounds.
+- [x] **`INTERCHANGE_TO` seeded bidirectionally with fixed walk time.** Both MS→NR and NR→MS directions are created with `walk_time_min = 5` and `accessible = true`. Why: cross-network route queries need to traverse in either direction depending on journey origin; a fixed 5-minute walk is a reasonable uniform default for all interchange points.
+- [x] **`hops` interpolated into Cypher, not passed as a parameter.** In `query_delay_ripple`, the hop count is embedded directly into the query string via f-string. Why: Cypher does not support query parameters inside variable-length path bounds (`*1..$hops`); passing `hops` as a parameter causes a runtime `SyntaxError`.
+
+### Architecture
+- [x] **Agent tool routing is LLM-driven.** `skeleton/agent.py` uses the LLM to decide which database tool to call based on the user's question. Why: no hard-coded keyword matching needed for the main path; the LLM reads the user message and selects the right tool (graph, relational, or vector) automatically.
+- [x] **Vector search is pre-implemented and read-only.** `query_policy_vector_search` and `store_policy_document` in `databases/relational/queries.py` are already implemented. Students should not modify them; extend coverage by adding content to the JSON files in `train-mock-data/` and re-running `skeleton/seed_vectors.py`.
+
+### Testing
+- [x] **Graph query logic is covered by offline unit tests.** `test_graph_queries.py` uses `unittest.mock` to intercept the Neo4j driver, enabling schema consistency checks and edge-case validation (e.g. route-not-found handling) without a live database connection. All tests pass 100%.
+
+---
 
 ## Prompts That Worked
 
-<!-- Share prompts that produced good output so teammates can reuse them. -->
+### Schema design prompt
+```
+We are designing a PostgreSQL schema for a transit system with two networks:
+City Metro (MS01–MS20, lines M1–M4) and National Rail (NR01–NR10, lines NR1–NR2).
 
-### Schema design prompt that worked:
-```
-TODO — add a prompt here after your schema design workshop
+Requirements:
+- Query schedules between two stations in stop order
+- Calculate fares (base fare + per-stop rate, with fare classes for rail)
+- Book and cancel national rail seats (coach + seat_id)
+- Track metro tap-in/tap-out travel history
+- Store payments for both booking types in one table
+- Some metro stations physically connect to rail stations (interchange)
+
+The source data is in these JSON files: metro_stations.json, national_rail_stations.json,
+metro_schedules.json, national_rail_schedules.json, national_rail_seat_layouts.json,
+bookings.json, metro_travel_history.json, payments.json.
+
+Design a normalised schema. Separate metro and rail into distinct table families.
+Normalise stop ordering into a join table (not a JSON array). Output CREATE TABLE
+statements with appropriate PRIMARY KEY, FOREIGN KEY, and CHECK constraints.
 ```
 
-### Query implementation prompt that worked:
+### Graph query implementation prompt
 ```
-TODO — add after implementing your first function
+Implement a Neo4j Cypher query function in Python using the neo4j driver.
+
+Graph schema:
+- Nodes: MetroStation {station_id, name, lines[]}, NationalRailStation {station_id, name, lines[]}
+- Relationships: METRO_LINK {line, travel_time_min}, RAIL_LINK {line, travel_time_min},
+  INTERCHANGE_TO {walk_time_min, accessible} — all seeded bidirectionally
+
+Connection pattern (always use this):
+    with _driver() as driver:
+        with driver.session() as session:
+            result = session.run("MATCH ...", param=value)
+            return [dict(record) for record in result]
+
+Task: [describe the specific function here — e.g. "find the shortest route between
+two stations, returning station_id, name, label for each stop and total travel time"]
+
+Return [] or {"found": False} for not-found cases, never raise an exception.
+```
+
+### Relational query implementation prompt
+```
+Implement a PostgreSQL query function in Python using psycopg2.
+
+Always use this connection pattern:
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT ...", (param,))
+            return [dict(row) for row in cur.fetchall()]
+
+Use %s placeholders for all parameters — never f-string or format() into SQL.
+
+Schema: [paste the relevant CREATE TABLE statements from AI_SESSION_CONTEXT.md]
+
+Task: [describe the specific function — e.g. "return all schedules that serve both
+origin_id and destination_id in the correct stop order, including stop count"]
+
+Return [] or None for not-found cases, never raise an exception.
 ```
