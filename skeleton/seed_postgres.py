@@ -511,7 +511,7 @@ def seed_users(cur):
 
     inserted = insert_many(cur, table, columns, rows)
     print(f"  -> Inserted {inserted} rows into {table}")
-    Return a user_id -> user_id identity map for use by dependent seeders
+    #Return a user_id -> user_id identity map for use by dependent seeders
     return {item["user_id"]: item["user_id"] for item in data}
 
 def seed_national_rail_bookings(cur, user_map):
