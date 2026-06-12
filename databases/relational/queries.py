@@ -345,6 +345,7 @@ def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[
 
 def query_user_profile(user_email: str) -> Optional[dict]:
     """Return a user's profile by email."""
+    user_email = user_email.strip().lower()
     sql = """
         SELECT
             user_id,
@@ -372,6 +373,7 @@ def query_user_bookings(user_email: str) -> dict:
     Returns:
         dict with keys 'national_rail' (list) and 'metro' (list)
     """
+    user_email = user_email.strip().lower()
     sql_user = """
         SELECT user_id
         FROM registered_users
@@ -843,6 +845,7 @@ def register_user(
     NOTE: passwords are stored as plain text here intentionally for teaching
     purposes. In production, replace with a salted hash (e.g. bcrypt).
     """
+    email = email.strip().lower()
     user_id = "RU-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
     full_name = f"{first_name} {surname}".strip()
 
@@ -889,6 +892,7 @@ def login_user(email: str, password: str) -> Optional[dict]:
     Verify credentials. Returns a user dict on success or None on failure.
     Dict keys: user_id, email, full_name, first_name, surname, phone, date_of_birth, is_active.
     """
+    email = email.strip().lower()
     sql = """
         SELECT
             user_id,
@@ -923,6 +927,7 @@ def login_user(email: str, password: str) -> Optional[dict]:
 
 def get_user_secret_question(email: str) -> Optional[str]:
     """Return the secret question for a registered email, or None if not found."""
+    email = email.strip().lower()
     sql = """
         SELECT secret_question
         FROM registered_users
@@ -938,6 +943,7 @@ def get_user_secret_question(email: str) -> Optional[str]:
 
 def verify_secret_answer(email: str, answer: str) -> bool:
     """Return True if the provided answer matches the stored secret answer (case-insensitive)."""
+    email = email.strip().lower()
     sql = """
         SELECT secret_answer
         FROM registered_users
@@ -960,6 +966,7 @@ def verify_secret_answer(email: str, answer: str) -> bool:
 
 def update_password(email: str, new_password: str) -> bool:
     """Update the password for a user. Returns True if the row was updated."""
+    email = email.strip().lower()
     sql = """
         UPDATE registered_users
         SET password_hash = %s
