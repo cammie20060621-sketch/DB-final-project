@@ -33,6 +33,7 @@ During seeding, several mock JSON fields did not exactly match our schema column
 
 **Outcome:**  
 The AI helped us map `first_train_time` to `departure_time`, `last_train_time` to `arrival_time`, and `per_stop_rate_usd` to `per_stop_fare_usd`. After updating the seed script, PostgreSQL seeding completed successfully.
+
 ---
 
 ### Example 3 — Mapping Mock JSON Data to the Schema
