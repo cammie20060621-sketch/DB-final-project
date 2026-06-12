@@ -124,7 +124,7 @@ CREATE TABLE national_rail_stations (
     is_interchange_metro                    BOOLEAN NOT NULL DEFAULT FALSE,
     is_interchange_national_rail            BOOLEAN NOT NULL DEFAULT FALSE,
     interchange_national_rail_station_lines TEXT[],
-    interchange_metro_station_id            VARCHAR(10),
+    interchange_metro_station_id            VARCHAR(10)
 );
 
 

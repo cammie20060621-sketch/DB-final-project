@@ -356,7 +356,7 @@ def query_user_profile(user_email: str) -> Optional[dict]:
     sql = """
         SELECT
             user_id,
-            name,
+            name AS full_name,
             email,
             phone_number,
             year_of_birth,
