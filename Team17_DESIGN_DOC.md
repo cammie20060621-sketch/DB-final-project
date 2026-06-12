@@ -111,9 +111,9 @@ This module serves as the administrative backend control panel and strategy engi
 * `policy_documents`: Stores text assets like privacy policies and terms of service for frontend rendering.
 * **Core Function**: These tables store system parameters, legal clauses, or algorithmic variables (such as `pricing_model` or `formula`) utilized by the backend API to dynamically compute distance-based or zone-based fares.
 
----
+-
 This document provides a concise breakdown of the **1:1 (One-to-One)**, **1:N (One-to-Many)**, and **M:N (Many-to-Many)** relationships for each table in the schema shown in "Untitled.jpg".
----
+-
 
 ## 1. Core Users & Bookings
 
